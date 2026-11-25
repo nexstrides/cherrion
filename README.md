@@ -5,8 +5,8 @@ Below is the **complete, structured project documentation** formatted so you can
 # Cherrion — Project Documentation & Work History
 
 **Project Name:** Cherrion (CherryTree + Notion + Windows Sticky Notes)  
-**Architecture:** Local-First Vanilla Web App (HTML/CSS/JS) + Optional Zero-Dependency Node.js Sync Server  
-**Deliverables Created:** `index.html`, `styles.css`, `app.js`, `sync-server.js`
+**Architecture:** Local-First, End-to-End Encrypted Web App (TypeScript + Vite, libsodium) + Optional Zero-Dependency Node.js Sync Relay  
+**Deliverables Created:** `index.html`, `src/` (TypeScript app and styles), `tests/`, `sync-server.js`
 
 ---
 
@@ -19,69 +19,88 @@ Below is the **complete, structured project documentation** formatted so you can
 | **3** | **Packaging Automation** | Provided a single-command Windows PowerShell script to generate the `cherrion-notes` project folder and package it into `cherrion-notes.zip` on the Desktop. |
 | **4** | **Cloud Storage & Backup Guidance** | Documented how to upload the package to Google Drive and use JSON export/import with Google Drive for Desktop. |
 | **5** | **Data Persistence Documentation** | Detailed all three data storage locations (`localStorage`, `sync-data/` folder, and JSON exports) along with browser storage caveats. |
+| **6** | **Encrypted Vault & Templates (Step 1)** | Moved to TypeScript + Vite. Notes are encrypted on the device (Argon2id + XChaCha20-Poly1305 via libsodium) and stored in IndexedDB; the sync server and backups only ever see ciphertext. Added a vault password with a recovery key, auto-lock, a new-page template picker (Email account, Website login, Secure note, Meeting), categories, and field-group / secret-field blocks. |
 
 ---
 
 ## 2. Design Principles Followed
 
-1. **Lightweight & Zero-Bloat:** Built with pure vanilla HTML5, CSS3, and ES6+ JavaScript—no React, Webpack, or `npm install` required.
-2. **Maintainable Modular Structure:** Separated structure (`index.html`), theming/layout (`styles.css`), application logic (`app.js`), and remote sync (`sync-server.js`) into clean, readable files.
-3. **Local-First Reliability:** Every edit saves immediately to local browser storage so the app works 100% offline with zero latency.
+1. **Lightweight:** Plain TypeScript and DOM code with no UI framework. The only runtime dependency is libsodium; Vite, TypeScript and Vitest are development tools.
+2. **Maintainable Modular Structure:** Data model, templates, encryption, storage, sync and UI each live in their own module under `src/`, with unit tests for the security-critical parts in `tests/`.
+3. **Local-First Reliability:** Every edit is encrypted and saved to the browser's IndexedDB within a quarter of a second, so the app works fully offline.
 4. **Conflict-Safe Syncing:** Uses per-note timestamps (`updatedAt`) and soft-delete flags (`deleted: true` tombstones) so offline edits across devices merge using Last-Write-Wins without resurrecting deleted notes.
 5. **Predictable Block Editing:** Uses auto-resizing `<textarea>` elements instead of `contenteditable` to prevent cross-browser cursor glitches and messy HTML paste behavior.
+6. **Zero-Knowledge Encryption:** The vault password never leaves the device. Storage, sync and backups only hold ciphertext, and each note's id, timestamp and deleted flag are bound to its ciphertext so a server cannot tamper with them.
 
 ---
 
 ## 3. What Was Implemented
 
-### A. CherryTree-Style Hierarchy (`app.js`, `styles.css`)
+### A. CherryTree-Style Hierarchy (`src/ui/app.ts`, `src/styles.css`)
 * Infinite nested parent/child note tree in the left sidebar.
 * Expand/collapse toggles (`▶` / `▼`) persisted per note.
 * Breadcrumb navigation trail in the top bar (e.g., `Welcome / Quick Code & Shortcuts`).
 * Real-time search across note titles and all block contents (`Ctrl + K` / `Cmd + K` shortcut).
 * Cascading soft-delete for parent notes and their child sub-notes.
 
-### B. Notion-Style Block Editor (`app.js`, `styles.css`)
-* **Supported Block Types:** Paragraph (`p`), Heading 1 (`h1`), Heading 2 (`h2`), To-do Checkbox (`todo`), Callout (`callout`), Quote (`quote`), Code Block (`code`), and Divider (`divider`).
+### B. Notion-Style Block Editor (`src/ui/editor.ts`)
+* **Supported Block Types:** Paragraph (`p`), Heading 1 (`h1`), Heading 2 (`h2`), To-do Checkbox (`todo`), Callout (`callout`), Quote (`quote`), Code Block (`code`), Divider (`divider`), and Field group (`fields`, including secret fields).
 * **Slash Command Menu (`/`):** Typing `/` opens a filterable command menu navigable via `ArrowUp`, `ArrowDown`, `Enter`, `Escape`, or mouse click.
 * **Markdown Shortcuts:** Auto-converts `# `, `## `, `[] ` / `[ ] `, `> `, ```` ```  ````, and `---` into structured blocks.
 * **Keyboard & Hover Controls:** `Enter` creates a block below, `Backspace` on an empty block removes/resets it, `ArrowUp`/`ArrowDown` moves between blocks, plus hover buttons (`↑`, `↓`, `✕`) to reorder or delete blocks.
 
-### C. Windows Sticky Notes Integration (`app.js`, `styles.css`)
+### C. Windows Sticky Notes Integration (`src/ui/stickies.ts`)
 * **Pin & Color Coding:** Any note can be pinned as a Sticky Note with 5 color themes (`yellow`, `blue`, `green`, `pink`, `purple`).
 * **Sticky Board View:** Dedicated tab (`📌 Stickies`) displaying all pinned notes as editable desktop-style cards.
 * **Always-on-Top Pop-Out Windows:** Clicking `↗ Pop-Out` opens a floating sticky note window via the **Document Picture-in-Picture API** (stays above all other OS windows in Chrome/Edge), with `window.open` popup fallback in other browsers.
 * **Live Synchronization:** Edits inside a floating sticky note sync immediately back to the main tree and editor.
 
-### D. Sync, Theme & Backup (`app.js`, `sync-server.js`)
+### D. Sync, Theme & Backup (`src/store.ts`, `src/sync.ts`, `sync-server.js`)
 * **Instant Multi-Tab Sync:** Uses `BroadcastChannel` (`cherrion_sync`) to keep open tabs synchronized.
 * **Self-Hosted Sync Server (`sync-server.js`):** ~45-line Node.js HTTP server (`PORT 3456`) with CORS enabled and room-based JSON persistence (`POST /sync/:room`).
 * **Dark / Light Mode:** CSS-variable theme switcher (`🌓`) persisted in settings.
 * **Portable Backups:** Export full workspace to `.json` and import/merge `.json` backups without overwriting newer notes.
 
+### E. Encrypted Vault, Templates & Secret Fields (`src/`)
+* **Vault:** A vault password (Argon2id, 64 MiB) unlocks a random 256-bit vault key that encrypts every note with XChaCha20-Poly1305. A one-time **recovery key** can reset a forgotten password. Changing the password or making a new recovery key does not re-encrypt notes.
+* **User Name:** Asked for when the vault is created and changeable under **⚙ Settings → Profile**. It is stored encrypted in the vault, synced to joined devices, and shown in the sidebar and on the unlock screen ("Welcome back, …").
+* **Sub-note Shortcut:** Hovering a note in the tree shows a **+** that opens the template picker for a new sub-note under it.
+* **Drag & Drop Tree:** Drag a note onto the middle of another to nest it, or onto the top or bottom edge to reorder it. On touch screens, long-press first. **Alt+↑/↓** reorders from the keyboard, **Alt+→** nests and **Alt+←** moves a note out of its parent.
+* **Clickable Breadcrumbs & Page Links:** Each breadcrumb opens that page. Typing `/page` creates a sub-page from a template and leaves a link to it.
+* **Confirmations:** Removing a field, deleting a non-empty block, or deleting a page asks first in an in-app dialog.
+* **2FA Codes:** A **2FA code** field stores an authenticator secret key (or `otpauth://` link) and shows the current 6-digit code with a countdown ring, like an authenticator app (RFC 6238; SHA-1/256/512, 6–8 digits). **✎** edits the key and **📋** copies the current code. The Email account and Website login templates include it; `/2FA code` and **+ 2FA code** add one anywhere.
+* **Account Menu & Status:** The sidebar footer shows your name and the connection status: Local only, Syncing…, Online · synced, Offline, or Sync error. Clicking the name opens a menu with Sync now, Settings, Edit name, Dark/Light mode and Lock vault.
+* **Responsive Layout:** On narrow screens the sidebar slides in from ☰, top-bar buttons become icons, and block actions collapse into a ⋮ menu. All pickers are custom dropdowns that behave the same on every device.
+* **Lock & Auto-lock:** 🔒 locks every open tab. The vault also locks after 1–60 minutes of inactivity (configurable). Locking wipes decrypted content from memory and the page and closes pop-outs.
+* **Template Picker:** ＋ and ↳ Sub-note open a picker: Blank page, **Email account** (address, password, recovery email/phone, 2-Step method, backup codes), **Website login**, **Secure note** and **Meeting / general note**.
+* **Categories:** Each note has a category, shown as a tree icon and usable as a sidebar filter.
+* **Field Groups & Secret Fields:** Labelled inputs that can be added anywhere with `/` (**Field group**, **Secret field**). Secret values are masked until revealed, excluded from search, masked in stickies and pop-outs, and copied with a 30-second clipboard clear.
+* **Migration:** Notes from the earlier unencrypted version (in this browser, in old JSON backups, or in an old sync room) are encrypted on import, and the plaintext browser copy is removed.
+
 ---
 
 ## 4. Data Storage Locations
 
-1. **Browser `localStorage` (Primary):**
-   * Notes & tree state: `cherrion_state_v1`
-   * User preferences & sync config: `cherrion_settings_v1`
+1. **Browser IndexedDB (Primary):**
+   * Database `cherrion`: the vault header (wrapped keys only) and one encrypted envelope per note
+   * User preferences & sync config (not secret): `localStorage` key `cherrion_settings_v1`
 2. **Optional Sync Server Folder:**
-   * Saved on disk as `cherrion-notes/sync-data/<room-key>.json`
+   * Saved on disk as `sync-data/<room-key>.json`, holding encrypted envelopes plus a `__vault__` record
 3. **Manual Backups:**
-   * Downloaded as `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export JSON**
+   * Downloaded as `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export encrypted backup**; only the same vault can open it
 
 ---
 
 ## 5. Step-by-Step Setup & Usage Guide
 
-### Step 1: Create the Project Files
-* Run the provided PowerShell script (creates `Desktop\cherrion-notes\` and `Desktop\cherrion-notes.zip`), **or** create a folder containing `index.html`, `styles.css`, `app.js`, and `sync-server.js`.
+### Step 1: Install
+* Install Node.js 22.12 or newer, then run `npm install` in the project folder.
 
 ### Step 2: Launch Locally (Offline Mode)
-1. Open the `cherrion-notes` folder.
-2. Double-click `index.html` to open it in Chrome, Edge, or Firefox.
-3. Click **＋** to create root notes, **↳ Sub-note** for nested child notes, or press `Ctrl + K` to search.
+1. Run `npm run dev` and open `http://localhost:5173` in Chrome, Edge, or Firefox. Your vault is stored per browser and per address, so keep using `localhost:5173`; the app redirects `127.0.0.1` there automatically. (The app is a module bundle, so double-clicking `index.html` no longer works. `npm run build` produces `dist/`, which `npm run preview` serves.)
+2. Create your vault password and save the recovery key it shows.
+3. Click **＋** to pick a template for a new page, **↳ Sub-note** for nested child notes, or press `Ctrl + K` to search.
+4. `npm test` runs the unit tests and `npm run typecheck` checks types.
 
 ### Step 3: Use Blocks & Sticky Notes
 1. Click inside any block and type `/` to insert Headings, To-do lists, Callouts, Quotes, Code blocks, or Dividers.
@@ -89,16 +108,14 @@ Below is the **complete, structured project documentation** formatted so you can
 3. Click **↗ Pop-Out** (best in Chrome/Edge) to float the sticky note above other desktop apps.
 
 ### Step 4: Enable Multi-Device Sync (Optional)
-1. Ensure Node.js is installed, then open a terminal inside `cherrion-notes` and run:
-   ```bash
-   node sync-server.js
-   ```
+1. Run `npm run sync-server` (or `node sync-server.js`) in the project folder.
 2. In the app, click **⚙ Settings**, set **Sync Server URL** to `http://localhost:3456` (or your server/LAN IP), enter a **Sync Room Key**, and click **Save & Sync**.
+3. On another device, choose **Join it from a sync server** on the first screen and enter the same URL, room key and vault password.
 
-### Step 5: Backup or Sync via Google Drive (Zero-Server Option)
-1. Click **⚙ Settings → ⬇ Export JSON**.
-2. Save the `.json` file into your **Google Drive** (web upload or Google Drive for Desktop folder).
-3. On another device, click **⚙ Settings → ⬆ Import JSON** to merge changes.
+### Step 5: Backup via Google Drive (Zero-Server Option)
+1. Click **⚙ Settings → ⬇ Export encrypted backup**.
+2. Save the `.json` file into your **Google Drive** (web upload or Google Drive for Desktop folder). It is encrypted, so Drive cannot read it.
+3. On another device that has joined the same vault, click **⚙ Settings → ⬆ Import backup** to merge changes.
 
 ### Step 6: Optional Native Desktop App Upgrade
 * To turn this folder into a ~5 MB native Windows/Mac/Linux app with system tray support, initialize a **Tauri** project (`npm create tauri-app`) and point `frontendDist` to the `cherrion-notes` directory.

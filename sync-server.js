@@ -1,9 +1,12 @@
-﻿const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
+﻿// Optional zero-dependency sync relay. It never sees plaintext: clients send encrypted
+// note envelopes plus one `__vault__` record, and the server only reads `id` and `updatedAt`.
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PORT = 3456;
-const DATA_DIR = path.join(__dirname, 'sync-data');
+const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sync-data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 function safeRoom(name) { return name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'default'; }

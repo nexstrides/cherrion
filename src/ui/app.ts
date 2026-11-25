@@ -1,0 +1,506 @@
+// Main workspace: sidebar tree (with drag and drop), tabs, top bar actions, the slide-in sidebar on
+// narrow screens, and the settings modal.
+import { parseLegacyNotes } from '../legacy';
+import { CATEGORY_IDS, searchableText, type CategoryId, type Note } from '../model';
+import { AUTO_LOCK_CHOICES, saveSettings, settings } from '../settings';
+import * as store from '../store';
+import * as sync from '../sync';
+import { CATEGORIES } from '../templates';
+import { buildTree, compareSiblings, countDescendants, keyboardMove, planMove, type MoveChange } from '../tree';
+import { normalizeUserName, passwordProblem, WrongSecretError } from '../vault';
+import { closeDialog, confirmDialog, wireDialog } from './dialog';
+import { $, $input, autoResize, download, el, nextPaint, toast } from './dom';
+import { attachMenu, closeDropdowns, mountDropdown, type Dropdown } from './dropdown';
+import { addBlockAtEnd, closeSlashMenu, currentNote, focusBlock, renderBreadcrumbs, renderEditor } from './editor';
+import { closeTemplatePicker, openTemplatePicker, wireTemplatePicker } from './picker';
+import { render, selectNote, shell, ui } from './state';
+import { openFloatingSticky, renderStickyBoard } from './stickies';
+import { stopTotpDisplays } from './totpWidget';
+import { wireTreeDrag } from './treedrag';
+
+const narrow = window.matchMedia('(max-width: 860px)');
+
+// ---- Slide-in sidebar (narrow screens) ----
+
+function setNav(open: boolean): void {
+  $('app').classList.toggle('nav-open', open);
+  $('btn-menu').setAttribute('aria-expanded', String(open));
+  if (open) requestAnimationFrame(() => $('tree-container').querySelector<HTMLElement>('.tree-row.active, .tree-row')?.focus());
+}
+const closeNavIfNarrow = () => { if (narrow.matches) setNav(false); };
+
+// ---- Tree ----
+
+function renderTree(): void {
+  const container = $('tree-container');
+  const active = store.activeNotes();
+  const q = ui.search.trim().toLowerCase();
+
+  if (q || ui.category !== 'all') {
+    const matches = active
+      .filter(n => (ui.category === 'all' || n.category === ui.category) && (!q || searchableText(n).includes(q)))
+      .sort(compareSiblings);
+    container.replaceChildren(...(matches.length
+      ? matches.map(n => treeRow(n, 0, false))
+      : [el('div', { className: 'tree-empty', text: 'No matches found.' })]));
+    return;
+  }
+
+  const { children } = buildTree(active);
+  const rows: HTMLElement[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const n of children.get(parentId) ?? []) {
+      const kids = children.get(n.id) ?? [];
+      rows.push(treeRow(n, depth, kids.length > 0));
+      if (kids.length && !n.collapsed) walk(n.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  container.replaceChildren(...(rows.length ? rows : [el('div', { className: 'tree-empty', text: 'No notes yet. Press ＋ to create one.' })]));
+}
+
+function treeRow(note: Note, depth: number, hasChildren: boolean): HTMLElement {
+  const category = CATEGORIES[note.category];
+  const row = el('div', { className: `tree-row${note.id === ui.activeNoteId ? ' active' : ''}`, tabIndex: 0 });
+  row.dataset.noteId = note.id;
+  row.style.paddingLeft = `${8 + depth * 14}px`;
+  row.setAttribute('role', 'treeitem');
+  row.title = 'Drag to move. Alt+arrow keys also move it.';
+  if (hasChildren) row.setAttribute('aria-expanded', String(!note.collapsed));
+
+  const toggle = el('span', { className: 'tree-toggle', text: hasChildren ? (note.collapsed ? '▶' : '▼') : '' });
+  toggle.onclick = e => {
+    e.stopPropagation();
+    if (!hasChildren) return;
+    note.collapsed = !note.collapsed;
+    store.touchNote(note);
+    renderTree();
+  };
+  row.append(
+    toggle,
+    el('span', { className: 'tree-icon', text: category.icon, title: category.label }),
+    el('span', { className: 'tree-label', text: note.title || 'Untitled' }),
+  );
+  if (note.isSticky) row.append(el('span', { className: 'tree-badge', text: '📌', title: 'Pinned sticky' }));
+
+  const addLabel = `Add sub-note to “${note.title || 'Untitled'}”`;
+  const add = el('button', {
+    className: 'tree-add', type: 'button', text: '+', title: addLabel,
+    onclick: e => { e.stopPropagation(); openTemplatePicker(note.id); },
+  });
+  add.setAttribute('aria-label', addLabel);
+  row.append(add);
+
+  const open = () => { selectNote(note.id); ui.activeTab = 'tree'; closeNavIfNarrow(); renderAll(); };
+  row.onclick = open;
+  row.onkeydown = e => {
+    if (e.target !== row) return; // keys on the + button belong to the button
+    if (e.altKey && e.key.startsWith('Arrow')) {
+      e.preventDefault();
+      const changes = keyboardMove(store.activeNotes(), note.id, e.key);
+      if (changes?.length) applyMove(note.id, changes, true);
+      return;
+    }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+  };
+  return row;
+}
+
+/** Applies a planned move, expands the new parent so the note stays visible, and re-renders. */
+function applyMove(noteId: string, changes: MoveChange[], refocus: boolean): void {
+  for (const c of changes) {
+    const n = store.getNote(c.id);
+    if (!n) continue;
+    n.parentId = c.parentId;
+    n.order = c.order;
+    store.touchNote(n);
+  }
+  const parentId = changes.find(c => c.id === noteId)?.parentId;
+  const parent = store.getNote(parentId ?? null);
+  if (parent?.collapsed) { parent.collapsed = false; store.touchNote(parent); }
+  renderTree();
+  renderBreadcrumbs(currentNote());
+  if (refocus) $('tree-container').querySelector<HTMLElement>(`[data-note-id="${CSS.escape(noteId)}"]`)?.focus();
+}
+
+function renderTabs(): void {
+  const isTree = ui.activeTab === 'tree';
+  $('tab-tree').classList.toggle('active', isTree);
+  $('tab-stickies').classList.toggle('active', !isTree);
+  $('editor-view').classList.toggle('hidden', !isTree);
+  $('sticky-board-view').classList.toggle('hidden', isTree);
+}
+
+export function renderAll(): void {
+  document.body.classList.toggle('dark', settings.dark);
+  renderUserChip();
+  renderTabs();
+  renderTree();
+  renderEditor();
+  renderStickyBoard();
+}
+
+function renderUserChip(): void {
+  const name = store.getProfile()?.userName ?? '';
+  const chip = $('btn-user');
+  chip.classList.toggle('empty', !name);
+  $('user-avatar').textContent = name ? ([...name][0] ?? '?').toUpperCase() : '?';
+  $('user-name').textContent = name || 'Add your name';
+  chip.setAttribute('aria-label', `${name || 'No name set'}, ${$('sync-status').textContent}. Open account menu`);
+}
+
+/** Keeps the device-local copy of the user name (lock-screen greeting) in step with the vault. */
+export function rememberUserName(): void {
+  const name = store.getProfile()?.userName;
+  if (name && name !== settings.userName) { settings.userName = name; saveSettings(); }
+}
+
+/** Removes every piece of decrypted content from the page (used when locking). */
+export function clearAppDom(): void {
+  closeSlashMenu();
+  closeTemplatePicker();
+  closeDropdowns();
+  closeDialog();
+  setNav(false);
+  $('settings-modal').classList.add('hidden');
+  for (const id of ['tree-container', 'blocks-container', 'sticky-grid', 'note-meta', 'breadcrumbs']) $(id).replaceChildren();
+  $('user-name').textContent = '';
+  $('user-avatar').textContent = '';
+  $input('input-user-name').value = '';
+  $input('note-title').value = '';
+  $input('note-title').placeholder = 'Untitled note'; // the category placeholder would hint at the last note
+  $input('search-input').value = '';
+  $('new-recovery-output').classList.add('hidden');
+  $('new-recovery-key').textContent = '';
+  ui.search = '';
+  ui.revealed.clear();
+  ui.editing.clear();
+  stopTotpDisplays();
+}
+
+// ---- Sync status ----
+
+/** Status shown under the user name: Local only / Syncing… / Online · synced / Offline / Sync error. */
+function renderSyncState(s: sync.SyncState = sync.getSyncState()): void {
+  const status = $('sync-status');
+  let text = 'Local only';
+  let kind = 'local';
+  let title = 'Notes are saved on this device only. Set up sync from this menu.';
+  if (settings.syncUrl && !navigator.onLine) {
+    text = 'Offline'; kind = 'offline';
+    title = 'No connection. Changes are saved on this device and sync when you are back online.';
+  } else if (s.kind === 'syncing') {
+    text = 'Syncing…'; kind = 'syncing'; title = 'Syncing with the server';
+  } else if (s.kind === 'synced') {
+    text = s.unreadable ? `Online · ${s.unreadable} unreadable` : 'Online · synced';
+    kind = 'ok';
+    title = `Last synced ${new Date(s.at).toLocaleTimeString()}`;
+  } else if (s.kind === 'error') {
+    text = 'Sync error'; kind = 'err'; title = s.message;
+  } else if (settings.syncUrl) {
+    text = 'Online'; kind = 'ok'; title = 'Sync is set up';
+  }
+  status.textContent = text;
+  status.className = `sync-status ${kind}`;
+  status.title = title;
+  renderUserChip();
+  $('btn-user').title = `${$('user-name').textContent} · ${title}`;
+}
+
+async function syncFromMenu(): Promise<void> {
+  if (!settings.syncUrl) { openSettings(); $input('input-sync-url').focus(); return; }
+  if (!navigator.onLine) { toast('You are offline. Changes are kept on this device and sync when you reconnect.'); return; }
+  await sync.syncNow();
+  const s = sync.getSyncState();
+  if (s.kind === 'error') toast(s.message, 'error', 7000);
+  else if (s.kind === 'synced') toast('Synced.');
+}
+
+function wireUserMenu(): void {
+  attachMenu($('btn-user') as HTMLButtonElement, {
+    ariaLabel: 'Account menu',
+    items: () => [
+      { value: 'sync', label: settings.syncUrl ? 'Sync now' : 'Set up sync…', icon: '↻' },
+      { value: 'settings', label: 'Settings', icon: '⚙' },
+      { value: 'profile', label: 'Edit name', icon: '👤' },
+      { value: 'theme', label: settings.dark ? 'Light mode' : 'Dark mode', icon: '🌓' },
+      { value: 'lock', label: 'Lock vault', icon: '🔒' },
+    ],
+    onSelect: action => {
+      if (action === 'sync') void syncFromMenu();
+      else if (action === 'settings') openSettings();
+      else if (action === 'profile') { openSettings(); $input('input-user-name').focus(); }
+      else if (action === 'theme') { settings.dark = !settings.dark; saveSettings(); renderAll(); }
+      else if (action === 'lock') shell.lock();
+    },
+  });
+  window.addEventListener('online', () => { renderSyncState(); if (settings.syncUrl && store.isUnlocked()) void sync.syncNow(); });
+  window.addEventListener('offline', () => renderSyncState());
+}
+
+// ---- Settings ----
+
+let autoLockDropdown: Dropdown | null = null;
+
+function openSettings(): void {
+  $input('input-user-name').value = store.getProfile()?.userName ?? settings.userName;
+  $input('input-sync-url').value = settings.syncUrl;
+  $input('input-sync-key').value = settings.syncKey;
+  autoLockDropdown?.setValue(String(settings.autoLockMinutes));
+  for (const id of ['input-current-password', 'input-new-password', 'input-confirm-password']) $input(id).value = '';
+  $('security-error').classList.add('hidden');
+  $('new-recovery-output').classList.add('hidden');
+  closeNavIfNarrow();
+  $('settings-modal').classList.remove('hidden');
+  $input('input-sync-url').focus();
+}
+
+function closeSettings(): void {
+  closeDropdowns();
+  $('settings-modal').classList.add('hidden');
+  $('new-recovery-key').textContent = '';
+  $('new-recovery-output').classList.add('hidden');
+}
+
+function validSyncUrl(text: string): boolean {
+  if (!text) return true;
+  try { return ['http:', 'https:'].includes(new URL(text).protocol); } catch { return false; }
+}
+
+async function importFile(file: File): Promise<void> {
+  let data: unknown;
+  try { data = JSON.parse(await file.text()); } catch { toast('That file is not valid JSON.', 'error'); return; }
+
+  if (store.isBackup(data)) {
+    if (data.header.vaultId !== store.getHeader()?.vaultId) {
+      toast('This backup belongs to a different vault, so it cannot be decrypted here.', 'error', 7000);
+      return;
+    }
+    const { changed, failed } = await store.applyEnvelopes(data.notes);
+    toast(`Merged ${changed} note(s) from the encrypted backup.${failed ? ` ${failed} could not be decrypted.` : ''}`);
+    return;
+  }
+  if (typeof data === 'object' && data !== null && 'notes' in data) {
+    const count = await store.importPlainNotes(parseLegacyNotes((data as { notes: unknown }).notes));
+    toast(`Imported and encrypted ${count} note(s) from an unencrypted backup. Delete the original file, since anyone can read it.`, 'info', 9000);
+    return;
+  }
+  toast('That is not a Cherrion backup file.', 'error');
+}
+
+function securityError(message: string): void {
+  const e = $('security-error');
+  e.textContent = message;
+  e.classList.remove('hidden');
+}
+
+async function runSecurityAction(button: HTMLButtonElement, work: () => Promise<void>): Promise<void> {
+  const label = button.textContent;
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>('#form-security button')];
+  buttons.forEach(b => (b.disabled = true));
+  button.textContent = 'Working…';
+  $('security-error').classList.add('hidden');
+  try {
+    await nextPaint();
+    await work();
+  } catch (err) {
+    securityError(err instanceof WrongSecretError ? 'Your current password is wrong.' : err instanceof Error ? err.message : String(err));
+  } finally {
+    buttons.forEach(b => (b.disabled = false));
+    button.textContent = label;
+  }
+}
+
+function wireSettings(): void {
+  autoLockDropdown = mountDropdown('select-auto-lock', {
+    ariaLabel: 'Auto-lock',
+    options: AUTO_LOCK_CHOICES.map(m => ({ value: String(m), label: m === 0 ? 'Never' : m === 1 ? 'After 1 minute' : `After ${m} minutes` })),
+    value: String(settings.autoLockMinutes),
+    onChange: () => { /* saved with "Save & Sync" */ },
+  });
+
+  $('btn-close-settings').onclick = closeSettings;
+
+  const saveProfile = $('btn-save-profile') as HTMLButtonElement;
+  saveProfile.onclick = async () => {
+    const name = normalizeUserName($input('input-user-name').value);
+    if (!name) { toast('Enter a user name.', 'error'); return; }
+    if (name === store.getProfile()?.userName) { toast('Name unchanged.'); return; }
+    saveProfile.disabled = true;
+    try {
+      await store.setUserName(name);
+      rememberUserName();
+      $input('input-user-name').value = name;
+      toast('Name saved. It syncs to your other devices with the vault.');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), 'error');
+    } finally {
+      saveProfile.disabled = false;
+    }
+  };
+  $('settings-modal').addEventListener('mousedown', e => { if (e.target === e.currentTarget) closeSettings(); });
+  $('settings-modal').addEventListener('keydown', e => { if (e.key === 'Escape') closeSettings(); });
+
+  $('btn-save-settings').onclick = () => {
+    const url = $input('input-sync-url').value.trim();
+    if (!validSyncUrl(url)) { toast('The sync server URL must start with http:// or https://', 'error'); return; }
+    settings.syncUrl = url;
+    settings.syncKey = $input('input-sync-key').value.trim() || 'my-personal-notes';
+    if (autoLockDropdown) settings.autoLockMinutes = Number(autoLockDropdown.value);
+    saveSettings();
+    closeSettings();
+    if (settings.syncUrl) void sync.syncNow(); else sync.resetSyncState();
+  };
+
+  $('btn-export-json').onclick = async () => {
+    const backup = await store.makeBackup();
+    download(`cherrion-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2));
+    toast('Encrypted backup downloaded. Only this vault (your password or recovery key) can open it.');
+  };
+
+  const importInput = $input('input-import-json');
+  importInput.onchange = async () => {
+    const file = importInput.files?.[0];
+    importInput.value = '';
+    if (file) await importFile(file);
+  };
+
+  $('form-security').addEventListener('submit', e => {
+    e.preventDefault();
+    const current = $input('input-current-password').value;
+    const next = $input('input-new-password').value;
+    if (!current) { securityError('Enter your current password.'); return; }
+    const problem = passwordProblem(next);
+    if (problem) { securityError(problem); return; }
+    if (next !== $input('input-confirm-password').value) { securityError('The new passwords do not match.'); return; }
+    void runSecurityAction($('btn-change-password') as HTMLButtonElement, async () => {
+      await store.changePassword(current, next);
+      for (const id of ['input-current-password', 'input-new-password', 'input-confirm-password']) $input(id).value = '';
+      toast('Vault password changed. Use the new one next time you unlock.');
+    });
+  });
+
+  $('btn-new-recovery').onclick = () => {
+    const current = $input('input-current-password').value;
+    if (!current) { securityError('Enter your current password to create a new recovery key.'); return; }
+    void runSecurityAction($('btn-new-recovery') as HTMLButtonElement, async () => {
+      const key = await store.newRecoveryKey(current);
+      $input('input-current-password').value = '';
+      $('new-recovery-key').textContent = key;
+      $('new-recovery-output').classList.remove('hidden');
+    });
+  };
+
+  $('btn-copy-new-recovery').onclick = () => {
+    navigator.clipboard.writeText($('new-recovery-key').textContent ?? '')
+      .then(() => toast('Recovery key copied.'), () => toast('Copy failed: the browser blocked clipboard access.', 'error'));
+  };
+}
+
+async function deleteCurrentNote(): Promise<void> {
+  const note = currentNote();
+  if (!note) return;
+  const subs = countDescendants(store.activeNotes(), note.id);
+  const ok = await confirmDialog({
+    title: 'Delete page?',
+    message: `“${note.title || 'Untitled'}”${subs ? ` and its ${subs} sub-page${subs === 1 ? '' : 's'}` : ''} will be deleted on all synced devices. This cannot be undone.`,
+  });
+  if (!ok) return;
+  const removed = store.deleteNoteTree(note.id);
+  if (ui.activeNoteId && removed.includes(ui.activeNoteId)) selectNote(store.activeNotes()[0]?.id ?? null);
+  renderAll();
+}
+
+// ---- Wiring ----
+
+export function wireApp(): void {
+  render.all = renderAll;
+  render.tree = renderTree;
+  render.editor = renderEditor;
+  render.stickies = renderStickyBoard;
+  shell.closeNav = closeNavIfNarrow;
+
+  wireDialog();
+  wireTemplatePicker();
+  wireSettings();
+
+  mountDropdown('category-filter', {
+    className: 'dd-block',
+    ariaLabel: 'Filter by category',
+    options: [{ value: 'all', label: 'All categories', icon: '🗂' }, ...CATEGORY_IDS.map(id => ({ value: id, label: CATEGORIES[id].label, icon: CATEGORIES[id].icon }))],
+    value: 'all',
+    onChange: v => { ui.category = v as CategoryId | 'all'; renderTree(); },
+  });
+
+  wireTreeDrag($('tree-container'), (dragId, target) => {
+    const changes = planMove(store.activeNotes(), dragId, target.id, target.pos);
+    if (changes?.length) applyMove(dragId, changes, false);
+  });
+
+  $('btn-menu').onclick = () => setNav(!$('app').classList.contains('nav-open'));
+  $('nav-backdrop').onclick = () => setNav(false);
+  $('sidebar').addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('app').classList.contains('nav-open')) { setNav(false); $('btn-menu').focus(); }
+  });
+  narrow.addEventListener('change', () => { if (!narrow.matches) setNav(false); });
+
+  $('btn-new-root').onclick = () => openTemplatePicker(null);
+  $('btn-empty-create').onclick = () => openTemplatePicker(null);
+  $('btn-add-child').onclick = () => { if (currentNote()) openTemplatePicker(ui.activeNoteId); };
+  $('btn-delete-note').onclick = () => void deleteCurrentNote();
+  $('btn-theme').onclick = () => { settings.dark = !settings.dark; saveSettings(); renderAll(); };
+  $('tab-tree').onclick = () => { ui.activeTab = 'tree'; renderAll(); };
+  $('tab-stickies').onclick = () => { ui.activeTab = 'stickies'; closeNavIfNarrow(); renderAll(); };
+  $input('search-input').addEventListener('input', e => { ui.search = (e.target as HTMLInputElement).value; renderTree(); });
+
+  const title = $('note-title') as HTMLTextAreaElement;
+  title.addEventListener('input', () => {
+    const note = currentNote();
+    if (!note) return;
+    if (/\n/.test(title.value)) title.value = title.value.replace(/\s*\n\s*/g, ' '); // titles are one line, even when pasted
+    autoResize(title);
+    note.title = title.value;
+    store.touchNote(note);
+    renderBreadcrumbs(note);
+    renderTree();
+  });
+  title.addEventListener('keydown', e => {
+    // Enter moves into the page body instead of adding a line break.
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    const first = currentNote()?.blocks[0];
+    if (first) focusBlock(first.id);
+  });
+  window.addEventListener('resize', () => autoResize(title));
+  $('btn-add-block').onclick = () => { const note = currentNote(); if (note) addBlockAtEnd(note); };
+  $('btn-pin-sticky').onclick = () => {
+    const note = currentNote();
+    if (!note) return;
+    note.isSticky = !note.isSticky;
+    store.touchNote(note);
+    renderAll();
+  };
+  $('btn-popout').onclick = () => { if (ui.activeNoteId) void openFloatingSticky(ui.activeNoteId); };
+
+  wireUserMenu();
+  sync.onSyncState(renderSyncState);
+  store.onPersisted(() => sync.scheduleSync());
+  store.onChange(({ reason, ids }) => {
+    if (!store.isUnlocked()) return;
+    if (reason === 'header') { renderUserChip(); rememberUserName(); return; }
+    renderTree();
+    renderStickyBoard();
+    // Only rebuild the editor when its own note changed, so typing elsewhere keeps the cursor.
+    if (!currentNote()) { selectNote(store.activeNotes()[0]?.id ?? null); renderEditor(); }
+    else if (ui.activeNoteId && ids.includes(ui.activeNoteId)) renderEditor();
+    else renderBreadcrumbs(currentNote());
+  });
+
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && store.isUnlocked()) {
+      e.preventDefault();
+      if (narrow.matches) setNav(true);
+      $input('search-input').focus();
+    }
+  });
+}

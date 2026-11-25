@@ -1,0 +1,8 @@
+# Runtime data written by sync-server.js (user notes)
+sync-data/
+
+CLAUDE.md
+
+# Dependencies and build output
+node_modules/
+dist/

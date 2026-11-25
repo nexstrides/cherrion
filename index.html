@@ -3,22 +3,113 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cherrion - Tree + Blocks + Sticky Notes</title>
-  <link rel="stylesheet" href="styles.css" />
+  <!-- connect-src stays open because the sync server URL is user-configured; step 2 pins it to the real backend. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="referrer" content="no-referrer" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%92%3C/text%3E%3C/svg%3E" />
+  <title>Cherrion</title>
 </head>
 <body>
-  <div id="app" class="app-shell">
+  <div id="lock-screen" class="lock-screen">
+    <div class="lock-card">
+      <div class="lock-brand">🍒 Cherrion</div>
+
+      <form id="panel-setup" class="lock-panel hidden" novalidate>
+        <h2>Create your vault</h2>
+        <p class="muted">Notes are encrypted on this device with your vault password before they are saved or synced. Nobody else can read them, including any sync server. If you forget the password, only your recovery key can get you back in.</p>
+        <p id="setup-legacy-note" class="notice hidden"></p>
+        <label class="field-label">User name
+          <input id="setup-username" type="text" autocomplete="username" maxlength="60" placeholder="e.g. Albert" spellcheck="false" />
+        </label>
+        <label class="field-label">Vault password
+          <input id="setup-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field-label">Confirm password
+          <input id="setup-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Create vault</button>
+        <button type="button" id="link-join" class="link-btn">Already have a vault on another device? Join it from a sync server</button>
+      </form>
+
+      <div id="panel-recovery" class="lock-panel hidden">
+        <h2>Save your recovery key</h2>
+        <p class="muted">This is the only way back in if you forget your vault password, and it is shown only once. Keep it somewhere safe and offline, such as a password manager or on paper.</p>
+        <code id="recovery-key-text" class="recovery-key"></code>
+        <div class="row">
+          <button type="button" id="btn-copy-recovery" class="action-btn">📋 Copy</button>
+          <button type="button" id="btn-download-recovery" class="action-btn">⬇ Save as text file</button>
+        </div>
+        <label class="check"><input id="recovery-saved" type="checkbox" /> I saved my recovery key somewhere safe</label>
+        <button type="button" id="btn-recovery-continue" class="primary-btn wide" disabled>Open my vault</button>
+      </div>
+
+      <form id="panel-unlock" class="lock-panel hidden" novalidate>
+        <h2 id="unlock-title">Unlock your vault</h2>
+        <!-- Lets password managers pair the saved vault password with this user name. -->
+        <input id="unlock-username" type="text" autocomplete="username" hidden />
+        <label class="field-label">Vault password
+          <input id="unlock-password" type="password" autocomplete="current-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Unlock</button>
+        <button type="button" id="link-recover" class="link-btn">Forgot your password? Use your recovery key</button>
+      </form>
+
+      <form id="panel-recover" class="lock-panel hidden" novalidate>
+        <h2>Reset with your recovery key</h2>
+        <label class="field-label">Recovery key
+          <input id="recover-key" type="text" autocomplete="off" spellcheck="false" placeholder="XXXXXXXX-XXXXXXXX-…" />
+        </label>
+        <label class="field-label">New vault password
+          <input id="recover-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field-label">Confirm new password
+          <input id="recover-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Reset password and unlock</button>
+        <button type="button" id="link-unlock" class="link-btn">Back to unlock</button>
+      </form>
+
+      <form id="panel-join" class="lock-panel hidden" novalidate>
+        <h2>Join an existing vault</h2>
+        <p class="muted">Use the sync server URL and room key from your other device, and your vault password.</p>
+        <label class="field-label">Sync server URL
+          <input id="join-url" type="url" placeholder="http://localhost:3456" autocomplete="off" />
+        </label>
+        <label class="field-label">Sync room key
+          <input id="join-room" type="text" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field-label">Vault password
+          <input id="join-password" type="password" autocomplete="current-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Join vault</button>
+        <button type="button" id="link-setup" class="link-btn">Back to creating a new vault</button>
+      </form>
+
+      <div id="panel-fatal" class="lock-panel hidden">
+        <h2>Cherrion could not start</h2>
+        <p id="fatal-message" class="form-error"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app-shell hidden">
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-header">
         <span class="brand">🍒 Cherrion</span>
         <div class="header-actions">
-          <button id="btn-theme" title="Toggle Dark/Light Mode">🌓</button>
-          <button id="btn-new-root" title="New Root Note">＋</button>
+          <button id="btn-lock" title="Lock vault" aria-label="Lock vault">🔒</button>
+          <button id="btn-theme" title="Toggle Dark/Light Mode" aria-label="Toggle dark mode">🌓</button>
+          <button id="btn-new-root" title="New page" aria-label="New page">＋</button>
         </div>
       </div>
 
       <div class="search-box">
-        <input id="search-input" type="search" placeholder="Search tree & blocks (Ctrl+K)..." />
+        <input id="search-input" type="search" placeholder="Search tree & blocks (Ctrl+K)..." aria-label="Search notes" />
+        <div id="category-filter"></div>
       </div>
 
       <div class="nav-tabs">
@@ -26,46 +117,49 @@
         <button id="tab-stickies" class="tab-btn">📌 Stickies (<span id="sticky-count">0</span>)</button>
       </div>
 
-      <div id="tree-container" class="tree-container"></div>
+      <div id="tree-container" class="tree-container" role="tree" aria-label="Notes"></div>
 
       <div class="sidebar-footer">
-        <div class="sync-row">
-          <span id="sync-status" class="sync-status">● Local</span>
-          <button id="btn-sync-now" class="mini-btn" title="Sync with server">↻ Sync</button>
-          <button id="btn-settings" class="mini-btn" title="Sync & Backup Settings">⚙</button>
-        </div>
+        <!-- Opens the account menu (sync, settings, profile, theme, lock). -->
+        <button id="btn-user" class="user-chip">
+          <span id="user-avatar" class="user-avatar" aria-hidden="true"></span>
+          <span class="user-meta">
+            <span id="user-name" class="user-name"></span>
+            <span id="sync-status" class="sync-status" role="status">Local only</span>
+          </span>
+          <span class="dd-caret" aria-hidden="true">▾</span>
+        </button>
       </div>
     </aside>
 
     <main class="workspace">
       <header class="topbar">
-        <div id="breadcrumbs" class="breadcrumbs"></div>
+        <div class="topbar-left">
+          <button id="btn-menu" class="menu-btn" aria-label="Open notes" aria-controls="sidebar" aria-expanded="false">☰</button>
+          <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+        </div>
         <div id="note-actions" class="note-actions hidden">
-          <div class="sticky-color-picker" title="Sticky Note Color">
-            <button id="btn-pin-sticky" class="action-btn">📌 Pin Sticky</button>
-            <select id="sticky-color-select" title="Sticky color">
-              <option value="yellow">Yellow</option>
-              <option value="blue">Blue</option>
-              <option value="green">Green</option>
-              <option value="pink">Pink</option>
-              <option value="purple">Purple</option>
-            </select>
+          <div class="sticky-color-picker">
+            <button id="btn-pin-sticky" class="action-btn" aria-pressed="false"><span aria-hidden="true">📌</span><span class="btn-label"> Pin Sticky</span></button>
+            <div id="sticky-color-select"></div>
           </div>
-          <button id="btn-popout" class="action-btn" title="Float Always-on-Top Sticky Window">↗ Pop-Out</button>
-          <button id="btn-add-child" class="action-btn" title="Add Sub-note">↳ Sub-note</button>
-          <button id="btn-delete-note" class="action-btn danger" title="Delete Note">🗑</button>
+          <button id="btn-popout" class="action-btn" title="Float as an always-on-top sticky window" aria-label="Pop-Out"><span aria-hidden="true">↗</span><span class="btn-label"> Pop-Out</span></button>
+          <button id="btn-add-child" class="action-btn" title="Add sub-note" aria-label="Sub-note"><span aria-hidden="true">↳</span><span class="btn-label"> Sub-note</span></button>
+          <button id="btn-delete-note" class="action-btn danger" title="Delete this page" aria-label="Delete page">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 3h4a1 1 0 0 1 1 1v3H9V4a1 1 0 0 1 1-1zM6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" /></svg><span class="btn-label">Delete</span>
+          </button>
         </div>
       </header>
 
       <section id="editor-view" class="editor-view">
         <div id="empty-state" class="empty-state">
           <h2>Select or create a note</h2>
-          <p>Combines <strong>CherryTree</strong> hierarchy, <strong>Notion</strong> <code>/</code> blocks, and floating <strong>Sticky Notes</strong>.</p>
-          <button id="btn-empty-create" class="primary-btn">Create First Note</button>
+          <p>Combines <strong>CherryTree</strong> hierarchy, <strong>Notion</strong> <code>/</code> blocks, and floating <strong>Sticky Notes</strong>, all end-to-end encrypted.</p>
+          <button id="btn-empty-create" class="primary-btn">Create a page</button>
         </div>
 
         <div id="note-container" class="note-container hidden">
-          <input id="note-title" class="note-title" type="text" placeholder="Untitled Note" />
+          <textarea id="note-title" class="note-title" rows="1" placeholder="Untitled note" aria-label="Title"></textarea>
           <div class="note-meta" id="note-meta"></div>
           <div id="blocks-container" class="blocks-container"></div>
           <button id="btn-add-block" class="add-block-hint">+ Click to add a block (or type <code>/</code> in any empty block)</button>
@@ -75,40 +169,109 @@
       <section id="sticky-board-view" class="sticky-board hidden">
         <div class="sticky-board-header">
           <h2>📌 Pinned Sticky Notes</h2>
-          <p>Quick desktop-style board. Click <strong>↗ Pop-Out</strong> on any card to float it above other apps.</p>
+          <p>Quick desktop-style board. Click <strong>↗ Pop-Out</strong> on any card to float it above other apps. Notes with fields or formatting are read-only here.</p>
         </div>
         <div id="sticky-grid" class="sticky-grid"></div>
       </section>
     </main>
+    <div id="nav-backdrop" class="nav-backdrop"></div>
   </div>
 
-  <div id="slash-menu" class="slash-menu hidden"></div>
-
-  <div id="settings-modal" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>Sync & Backup Settings</h3>
-        <button id="btn-close-settings">✕</button>
-      </div>
-      <label class="field-label">
-        Sync Server URL (optional - run <code>node sync-server.js</code>)
-        <input id="input-sync-url" type="text" placeholder="http://localhost:3456" />
-      </label>
-      <label class="field-label">
-        Sync Room / Workspace Key
-        <input id="input-sync-key" type="text" placeholder="my-personal-notes" />
-      </label>
-      <div class="modal-actions">
-        <button id="btn-save-settings" class="primary-btn">Save & Sync</button>
-        <button id="btn-export-json" class="action-btn">⬇ Export JSON</button>
-        <label class="action-btn file-btn">
-          ⬆ Import JSON
-          <input id="input-import-json" type="file" accept=".json" hidden />
-        </label>
+  <div id="confirm-modal" class="modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <div class="modal-card modal-small">
+      <h3 id="confirm-title" class="confirm-title"></h3>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="modal-actions end">
+        <button type="button" id="confirm-cancel" class="action-btn">Cancel</button>
+        <button type="button" id="confirm-ok" class="primary-btn">Delete</button>
       </div>
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Block types"></div>
+
+  <div id="template-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="template-title">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3 id="template-title">New page</h3>
+        <button id="btn-close-templates" aria-label="Close">✕</button>
+      </div>
+      <p id="template-subtitle" class="muted"></p>
+      <div id="template-grid" class="template-grid"></div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="settings-title">Settings</h3>
+        <button id="btn-close-settings" aria-label="Close">✕</button>
+      </div>
+
+      <h4 class="section-title first">Profile</h4>
+      <label class="field-label">
+        User name
+        <input id="input-user-name" type="text" autocomplete="username" maxlength="60" spellcheck="false" />
+      </label>
+      <p class="muted small">Stored encrypted in your vault and synced to your other devices.</p>
+      <div class="modal-actions">
+        <button id="btn-save-profile" class="action-btn">Save name</button>
+      </div>
+
+      <h4 class="section-title">Sync</h4>
+      <label class="field-label">
+        Sync server URL (optional, run <code>npm run sync-server</code>)
+        <input id="input-sync-url" type="text" placeholder="http://localhost:3456" autocomplete="off" />
+      </label>
+      <label class="field-label">
+        Sync room key
+        <input id="input-sync-key" type="text" placeholder="my-personal-notes" autocomplete="off" spellcheck="false" />
+      </label>
+      <p class="muted small">The server only ever receives encrypted notes. The room key decides which room they go in, so use the same one on every device.</p>
+      <div class="field-label">
+        Auto-lock
+        <div id="select-auto-lock"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-save-settings" class="primary-btn">Save & Sync</button>
+      </div>
+
+      <h4 class="section-title">Backup</h4>
+      <div class="modal-actions">
+        <button id="btn-export-json" class="action-btn">⬇ Export encrypted backup</button>
+        <label class="action-btn file-btn">
+          ⬆ Import backup
+          <input id="input-import-json" type="file" accept=".json,application/json" hidden />
+        </label>
+      </div>
+
+      <h4 class="section-title">Security</h4>
+      <form id="form-security" novalidate>
+        <label class="field-label">Current password
+          <input id="input-current-password" type="password" autocomplete="current-password" />
+        </label>
+        <label class="field-label">New password
+          <input id="input-new-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field-label">Confirm new password
+          <input id="input-confirm-password" type="password" autocomplete="new-password" />
+        </label>
+        <p id="security-error" class="form-error hidden" role="alert"></p>
+        <div class="modal-actions">
+          <button type="submit" id="btn-change-password" class="action-btn">Change password</button>
+          <button type="button" id="btn-new-recovery" class="action-btn" title="Needs only your current password">Create new recovery key</button>
+        </div>
+      </form>
+      <div id="new-recovery-output" class="hidden">
+        <p class="muted small">Your new recovery key. The old one no longer works.</p>
+        <code id="new-recovery-key" class="recovery-key"></code>
+        <button type="button" id="btn-copy-new-recovery" class="action-btn">📋 Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

@@ -1,0 +1,27 @@
+{
+  "name": "cherrion",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local-first, end-to-end encrypted notes: tree hierarchy, block editor, sticky notes and templates.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sync-server": "node sync-server.js"
+  },
+  "dependencies": {
+    "libsodium-wrappers-sumo": "0.8.4"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.3.6",
+    "vitest": "5.1.0"
+  }
+}
