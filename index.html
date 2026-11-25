@@ -1,0 +1,114 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cherrion - Tree + Blocks + Sticky Notes</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <span class="brand">🍒 Cherrion</span>
+        <div class="header-actions">
+          <button id="btn-theme" title="Toggle Dark/Light Mode">🌓</button>
+          <button id="btn-new-root" title="New Root Note">＋</button>
+        </div>
+      </div>
+
+      <div class="search-box">
+        <input id="search-input" type="search" placeholder="Search tree & blocks (Ctrl+K)..." />
+      </div>
+
+      <div class="nav-tabs">
+        <button id="tab-tree" class="tab-btn active">🌲 Tree</button>
+        <button id="tab-stickies" class="tab-btn">📌 Stickies (<span id="sticky-count">0</span>)</button>
+      </div>
+
+      <div id="tree-container" class="tree-container"></div>
+
+      <div class="sidebar-footer">
+        <div class="sync-row">
+          <span id="sync-status" class="sync-status">● Local</span>
+          <button id="btn-sync-now" class="mini-btn" title="Sync with server">↻ Sync</button>
+          <button id="btn-settings" class="mini-btn" title="Sync & Backup Settings">⚙</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div id="breadcrumbs" class="breadcrumbs"></div>
+        <div id="note-actions" class="note-actions hidden">
+          <div class="sticky-color-picker" title="Sticky Note Color">
+            <button id="btn-pin-sticky" class="action-btn">📌 Pin Sticky</button>
+            <select id="sticky-color-select" title="Sticky color">
+              <option value="yellow">Yellow</option>
+              <option value="blue">Blue</option>
+              <option value="green">Green</option>
+              <option value="pink">Pink</option>
+              <option value="purple">Purple</option>
+            </select>
+          </div>
+          <button id="btn-popout" class="action-btn" title="Float Always-on-Top Sticky Window">↗ Pop-Out</button>
+          <button id="btn-add-child" class="action-btn" title="Add Sub-note">↳ Sub-note</button>
+          <button id="btn-delete-note" class="action-btn danger" title="Delete Note">🗑</button>
+        </div>
+      </header>
+
+      <section id="editor-view" class="editor-view">
+        <div id="empty-state" class="empty-state">
+          <h2>Select or create a note</h2>
+          <p>Combines <strong>CherryTree</strong> hierarchy, <strong>Notion</strong> <code>/</code> blocks, and floating <strong>Sticky Notes</strong>.</p>
+          <button id="btn-empty-create" class="primary-btn">Create First Note</button>
+        </div>
+
+        <div id="note-container" class="note-container hidden">
+          <input id="note-title" class="note-title" type="text" placeholder="Untitled Note" />
+          <div class="note-meta" id="note-meta"></div>
+          <div id="blocks-container" class="blocks-container"></div>
+          <button id="btn-add-block" class="add-block-hint">+ Click to add a block (or type <code>/</code> in any empty block)</button>
+        </div>
+      </section>
+
+      <section id="sticky-board-view" class="sticky-board hidden">
+        <div class="sticky-board-header">
+          <h2>📌 Pinned Sticky Notes</h2>
+          <p>Quick desktop-style board. Click <strong>↗ Pop-Out</strong> on any card to float it above other apps.</p>
+        </div>
+        <div id="sticky-grid" class="sticky-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="slash-menu" class="slash-menu hidden"></div>
+
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Sync & Backup Settings</h3>
+        <button id="btn-close-settings">✕</button>
+      </div>
+      <label class="field-label">
+        Sync Server URL (optional - run <code>node sync-server.js</code>)
+        <input id="input-sync-url" type="text" placeholder="http://localhost:3456" />
+      </label>
+      <label class="field-label">
+        Sync Room / Workspace Key
+        <input id="input-sync-key" type="text" placeholder="my-personal-notes" />
+      </label>
+      <div class="modal-actions">
+        <button id="btn-save-settings" class="primary-btn">Save & Sync</button>
+        <button id="btn-export-json" class="action-btn">⬇ Export JSON</button>
+        <label class="action-btn file-btn">
+          ⬆ Import JSON
+          <input id="input-import-json" type="file" accept=".json" hidden />
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
