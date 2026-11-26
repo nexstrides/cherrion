@@ -7,7 +7,7 @@ let repo: Repo | null = null;
 /** Postgres when DATABASE_URL (or POSTGRES_URL) is set; otherwise an in-memory store for local development. */
 export function getRepo(): Repo {
   if (repo) return repo;
-  const url = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  const url = process.env.CHERRION_DATABASE_POSTGRES_URL ?? process.env.POSTGRES_URL;
   if (url) {
     repo = createPgRepo(url);
   } else if (process.env.VERCEL) {
