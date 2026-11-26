@@ -9,8 +9,8 @@ const byId = (id: string) => TEMPLATES.find(t => t.id === id)!;
 const fieldsOf = (note: Note) => note.blocks.filter((b): b is FieldsBlock => b.type === 'fields').flatMap(b => b.fields);
 
 describe('templates', () => {
-  it('offers blank, email, login, secure and meeting templates, each with a known category', () => {
-    expect(TEMPLATES.map(t => t.id)).toEqual(['blank', 'email', 'login', 'secure', 'meeting']);
+  it('offers blank, email, login, proxy, secure and meeting templates, each with a known category', () => {
+    expect(TEMPLATES.map(t => t.id)).toEqual(['blank', 'email', 'login', 'proxy', 'secure', 'meeting']);
     for (const t of TEMPLATES) expect(CATEGORIES[t.category]).toBeDefined();
   });
 

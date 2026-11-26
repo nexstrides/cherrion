@@ -3,7 +3,7 @@
 import * as session from '../desktop/session';
 import { parseLegacyNotes } from '../legacy';
 import { DESKTOP } from '../platform';
-import { CATEGORY_IDS, searchableText, type CategoryId, type Note } from '../model';
+import { CATEGORY_IDS, now, searchableText, uid, type CategoryId, type Note } from '../model';
 import { AUTO_LOCK_CHOICES, saveSettings, settings } from '../settings';
 import * as store from '../store';
 import * as sync from '../sync';
@@ -12,11 +12,15 @@ import { buildTree, compareSiblings, countDescendants, keyboardMove, planMove, t
 import { normalizeUserName, passwordProblem, WrongSecretError } from '../vault';
 import { closeDialog, confirmDialog, wireDialog } from './dialog';
 import { $, $input, autoResize, download, el, nextPaint, setWorking, toast } from './dom';
-import { attachMenu, closeDropdowns, mountDropdown, type Dropdown } from './dropdown';
-import { addBlockAtEnd, closeSlashMenu, currentNote, focusBlock, renderBreadcrumbs, renderEditor } from './editor';
+import { addContextMenu, type ContextMenu } from './contextMenu';
+import { attachMenu, closeDropdowns, mountDropdown, SEPARATOR, type Dropdown, type DropdownOption } from './dropdown';
+import { addBlockAtEnd, closeSlashMenu, currentNote, focusBlock, renderBreadcrumbs, renderEditor, wireEditorContextMenu, wireEditorPictures } from './editor';
+import { closeLightbox } from './images';
+import { openDocs, wireDocs } from './docs';
 import { closeTemplatePicker, openTemplatePicker, wireTemplatePicker } from './picker';
 import { render, selectNote, shell, ui } from './state';
 import { openFloatingSticky, renderStickyBoard } from './stickies';
+import { closeTransfer, openExport, openImport, wireTransfer } from './transfer';
 import { stopTotpDisplays } from './totpWidget';
 import { wireTreeDrag } from './treedrag';
 
@@ -93,7 +97,20 @@ function treeRow(note: Note, depth: number, hasChildren: boolean): HTMLElement {
   add.setAttribute('aria-label', addLabel);
   row.append(add);
 
-  const open = () => { selectNote(note.id); ui.activeTab = 'tree'; closeNavIfNarrow(); renderAll(); };
+  /** Shows or hides the sub-pages (kept on the note, so it syncs), keeping focus on this row. */
+  const setExpanded = (expanded: boolean) => {
+    if (!hasChildren || note.collapsed === !expanded) return;
+    note.collapsed = !expanded;
+    store.touchNote(note);
+    renderTree();
+    focusTreeRow(note.id);
+  };
+  // A click (or Enter / Space) opens the page and shows or hides its sub-pages. Keyboard focus stays
+  // on the row (it is rebuilt by renderAll), so Delete, F2 and the arrow keys act on this page.
+  const open = () => {
+    if (hasChildren) { note.collapsed = !note.collapsed; store.touchNote(note); }
+    treeAction(note.id, 'open');
+  };
   row.onclick = open;
   row.onkeydown = e => {
     if (e.target !== row) return; // keys on the + button belong to the button
@@ -103,9 +120,116 @@ function treeRow(note: Note, depth: number, hasChildren: boolean): HTMLElement {
       if (changes?.length) applyMove(note.id, changes, true);
       return;
     }
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return;
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    else if (e.key === 'Delete') { e.preventDefault(); void deleteNote(note.id); }
+    else if (e.key === 'F2') { e.preventDefault(); treeAction(note.id, 'rename'); }
+    else if (e.key === 'ArrowRight') {
+      // Expand; if already open, go to the first sub-page (the row right below).
+      e.preventDefault();
+      if (hasChildren && note.collapsed) setExpanded(true);
+      else if (hasChildren) focusSiblingRow(row, 1);
+    } else if (e.key === 'ArrowLeft') {
+      // Collapse; if already closed (or no sub-pages), go to the parent page.
+      e.preventDefault();
+      if (hasChildren && !note.collapsed) setExpanded(false);
+      else if (note.parentId) focusTreeRow(note.parentId);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      focusSiblingRow(row, e.key === 'ArrowDown' ? 1 : -1);
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      const rows = [...$('tree-container').querySelectorAll<HTMLElement>('.tree-row')];
+      (e.key === 'Home' ? rows[0] : rows[rows.length - 1])?.focus();
+    }
   };
   return row;
+}
+
+const focusTreeRow = (id: string) =>
+  $('tree-container').querySelector<HTMLElement>(`[data-note-id="${CSS.escape(id)}"]`)?.focus({ preventScroll: false });
+
+/** Moves keyboard focus to the visible row above (-1) or below (1). */
+function focusSiblingRow(row: HTMLElement, dir: -1 | 1): void {
+  const rows = [...$('tree-container').querySelectorAll<HTMLElement>('.tree-row')];
+  rows[rows.indexOf(row) + dir]?.focus();
+}
+
+/** A copy of one page (not its sub-pages) next to it, with fresh ids so both can be edited separately. */
+function duplicateNote(id: string): void {
+  const source = store.getNote(id);
+  if (!source || source.deleted) return;
+  const copy = structuredClone(source);
+  copy.id = uid();
+  copy.title = `${source.title || 'Untitled'} (copy)`;
+  copy.updatedAt = now();
+  copy.blocks = copy.blocks.map(b => (b.type === 'fields'
+    ? { ...b, id: uid(), fields: b.fields.map(f => ({ ...f, id: uid() })) }
+    : { ...b, id: uid() }));
+  store.addNote(copy);
+  selectNote(copy.id);
+  ui.activeTab = 'tree';
+  renderAll();
+  focusTreeRow(copy.id);
+}
+
+/** Sidebar actions, shared by clicks, keys and the right-click menu. */
+function treeAction(id: string, action: string): void {
+  const note = store.getNote(id);
+  if (!note || note.deleted) return;
+  if (action === 'open') {
+    selectNote(id); ui.activeTab = 'tree'; closeNavIfNarrow(); renderAll();
+    if (!narrow.matches) focusTreeRow(id);
+  } else if (action === 'sub') openTemplatePicker(id);
+  else if (action === 'sibling') openTemplatePicker(note.parentId);
+  else if (action === 'rename') {
+    selectNote(id); ui.activeTab = 'tree'; closeNavIfNarrow(); renderAll();
+    const title = $input('note-title');
+    title.focus();
+    title.select();
+  } else if (action === 'duplicate') duplicateNote(id);
+  else if (action === 'pin') { note.isSticky = !note.isSticky; store.touchNote(note); renderAll(); focusTreeRow(id); }
+  else if (action === 'toggle') { note.collapsed = !note.collapsed; store.touchNote(note); renderTree(); focusTreeRow(id); }
+  else if (action === 'up' || action === 'down') {
+    const changes = keyboardMove(store.activeNotes(), id, action === 'up' ? 'ArrowUp' : 'ArrowDown');
+    if (changes?.length) applyMove(id, changes, true);
+  } else if (action === 'delete') void deleteNote(id);
+  else if (action === 'export') openExport(id);
+  else if (action === 'import') openImport(id);
+}
+
+function treeContextMenu(e: MouseEvent): ContextMenu {
+  const row = (e.target as Element).closest<HTMLElement>('.tree-row');
+  const note = store.getNote(row?.dataset.noteId ?? null);
+  if (!row || !note || note.deleted) {
+    return {
+      label: 'Notes',
+      items: [{ value: 'new', label: 'New page…', svg: 'plus' }, { value: 'import', label: 'Import page…', svg: 'upload' }],
+      onSelect: v => (v === 'import' ? openImport(null) : openTemplatePicker(null)),
+    };
+  }
+  row.focus({ preventScroll: true });
+  const siblings = store.activeNotes().filter(n => n.parentId === note.parentId);
+  const hasChildren = store.activeNotes().some(n => n.parentId === note.id);
+  const items: DropdownOption[] = [
+    { value: 'open', label: 'Open', svg: 'file', hint: 'Enter' },
+    SEPARATOR,
+    { value: 'sub', label: 'New sub-page…', svg: 'subPage' },
+    { value: 'sibling', label: 'New page here…', svg: 'plus' },
+    { value: 'rename', label: 'Rename', svg: 'edit', hint: 'F2' },
+    { value: 'duplicate', label: 'Duplicate', svg: 'copy' },
+    { value: 'pin', label: note.isSticky ? 'Unpin from stickies' : 'Pin to stickies', svg: note.isSticky ? 'unpin' : 'pin' },
+    ...(hasChildren ? [{ value: 'toggle', label: note.collapsed ? 'Expand' : 'Collapse', svg: 'folder' as const }] : []),
+    SEPARATOR,
+    { value: 'up', label: 'Move up', svg: 'arrowUp', hint: 'Alt+↑', disabled: siblings.length < 2 },
+    { value: 'down', label: 'Move down', svg: 'arrowDown', hint: 'Alt+↓', disabled: siblings.length < 2 },
+    SEPARATOR,
+    { value: 'export', label: 'Export…', svg: 'download' },
+    { value: 'import', label: 'Import here…', svg: 'upload' },
+    SEPARATOR,
+    { value: 'delete', label: 'Delete…', svg: 'trash', hint: 'Del', danger: true },
+  ];
+  return { label: `Page “${note.title || 'Untitled'}”`, items, onSelect: action => treeAction(note.id, action) };
 }
 
 /** Applies a planned move, expands the new parent so the note stays visible, and re-renders. */
@@ -163,6 +287,8 @@ export function clearAppDom(): void {
   closeTemplatePicker();
   closeDropdowns();
   closeDialog();
+  closeTransfer();
+  closeLightbox();
   setNav(false);
   $('settings-modal').classList.add('hidden');
   for (const id of ['tree-container', 'blocks-container', 'sticky-grid', 'note-meta', 'breadcrumbs']) $(id).replaceChildren();
@@ -261,14 +387,14 @@ function wireUserMenu(): void {
     items: () => [
       ...(!DESKTOP || session.linkedAccount() ? [{ value: 'sync', label: 'Sync now', icon: '↻' }] : []),
       { value: 'settings', label: 'Settings', icon: '⚙' },
-      { value: 'profile', label: 'Edit name', icon: '👤' },
+      { value: 'docs', label: 'Documentation', icon: '📖' },
       { value: 'theme', label: settings.dark ? 'Light mode' : 'Dark mode', icon: '🌓' },
       { value: 'lock', label: DESKTOP ? 'Lock' : 'Log out', icon: '🔒' },
     ],
     onSelect: action => {
       if (action === 'sync') void syncFromMenu();
       else if (action === 'settings') openSettings();
-      else if (action === 'profile') { openSettings(); $input('input-user-name').focus(); }
+      else if (action === 'docs') openDocs();
       else if (action === 'theme') { settings.dark = !settings.dark; saveSettings(); renderAll(); }
       else if (action === 'lock') shell.lock();
     },
@@ -430,16 +556,27 @@ function wireSettings(): void {
 
 async function deleteCurrentNote(): Promise<void> {
   const note = currentNote();
-  if (!note) return;
+  if (note) await deleteNote(note.id);
+}
+
+/** Asks in the delete dialog, then deletes the page and its sub-pages (the toolbar, Delete key and menu). */
+async function deleteNote(id: string): Promise<void> {
+  const note = store.getNote(id);
+  if (!note || note.deleted) return;
   const subs = countDescendants(store.activeNotes(), note.id);
+  const where = DESKTOP && !session.linkedAccount() ? 'from this file' : 'on all synced devices';
   const ok = await confirmDialog({
     title: 'Delete page?',
-    message: `“${note.title || 'Untitled'}”${subs ? ` and its ${subs} sub-page${subs === 1 ? '' : 's'}` : ''} will be deleted on all synced devices. This cannot be undone.`,
+    message: `“${note.title || 'Untitled'}”${subs ? ` and its ${subs} sub-page${subs === 1 ? '' : 's'}` : ''} will be deleted ${where}. This cannot be undone.`,
   });
   if (!ok) return;
+  const fromTree = $('tree-container').contains(document.activeElement);
   const removed = store.deleteNoteTree(note.id);
   if (ui.activeNoteId && removed.includes(ui.activeNoteId)) selectNote(store.activeNotes()[0]?.id ?? null);
   renderAll();
+  // Keep working from the keyboard: focus moves to the page that is now selected.
+  if (ui.activeNoteId && !narrow.matches) focusTreeRow(ui.activeNoteId);
+  else if (fromTree) $('tree-container').focus();
 }
 
 // ---- Wiring ----
@@ -463,6 +600,9 @@ export function wireApp(): void {
     onChange: v => { ui.category = v as CategoryId | 'all'; renderTree(); },
   });
 
+  addContextMenu($('tree-container'), treeContextMenu);
+  wireEditorContextMenu();
+  wireEditorPictures();
   wireTreeDrag($('tree-container'), (dragId, target) => {
     const changes = planMove(store.activeNotes(), dragId, target.id, target.pos);
     if (changes?.length) applyMove(dragId, changes, false);
@@ -479,6 +619,20 @@ export function wireApp(): void {
   $('btn-empty-create').onclick = () => openTemplatePicker(null);
   $('btn-add-child').onclick = () => { if (currentNote()) openTemplatePicker(ui.activeNoteId); };
   $('btn-delete-note').onclick = () => void deleteCurrentNote();
+  wireTransfer();
+  wireDocs();
+  attachMenu($('btn-page-more') as HTMLButtonElement, {
+    ariaLabel: 'More page actions',
+    items: () => [
+      { value: 'export', label: 'Export page…', svg: 'download' },
+      { value: 'import', label: 'Import page here…', svg: 'upload' },
+    ],
+    onSelect: action => {
+      const note = currentNote();
+      if (action === 'export' && note) openExport(note.id);
+      else if (action === 'import') openImport(note?.id ?? null);
+    },
+  });
   $('btn-theme').onclick = () => { settings.dark = !settings.dark; saveSettings(); renderAll(); };
   $('tab-tree').onclick = () => { ui.activeTab = 'tree'; renderAll(); };
   $('tab-stickies').onclick = () => { ui.activeTab = 'stickies'; closeNavIfNarrow(); renderAll(); };

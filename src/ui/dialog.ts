@@ -1,7 +1,16 @@
 // In-app confirmation dialog (replaces window.confirm, which blocks the page and cannot be styled).
-import { $ } from './dom';
+import { $, el } from './dom';
 
-interface ConfirmOptions { title: string; message: string; confirmLabel?: string; danger?: boolean }
+interface ConfirmOptions {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  /** Destructive (red button, Cancel focused) unless false. */
+  danger?: boolean;
+  /** An optional list under the message, e.g. the fields a form adds. */
+  details?: { icon?: string; text: string }[];
+}
 
 let resolver: ((ok: boolean) => void) | null = null;
 let returnFocus: HTMLElement | null = null;
@@ -11,12 +20,16 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   $('confirm-title').textContent = opts.title;
   $('confirm-message').textContent = opts.message;
+  $('confirm-details').replaceChildren(...(opts.details ?? []).map(d =>
+    el('li', {}, el('span', { className: 'cd-icon', text: d.icon ?? '•' }), el('span', { text: d.text }))));
+  $('confirm-details').classList.toggle('hidden', !opts.details?.length);
   const ok = $('confirm-ok');
   ok.textContent = opts.confirmLabel ?? 'Delete';
   ok.classList.toggle('danger', opts.danger ?? true);
+  $('confirm-cancel').textContent = opts.cancelLabel ?? 'Cancel';
   $('confirm-modal').classList.remove('hidden');
-  // Destructive by default, so the safe choice gets focus.
-  requestAnimationFrame(() => $('confirm-cancel').focus());
+  // Destructive by default, so the safe choice gets focus; otherwise the main action does.
+  requestAnimationFrame(() => $(opts.danger === false ? 'confirm-ok' : 'confirm-cancel').focus());
   return new Promise(resolve => { resolver = resolve; });
 }
 
@@ -28,6 +41,7 @@ function finish(ok: boolean): void {
   // Messages name pages, so they must not stay in the (hidden) DOM after a lock.
   $('confirm-title').textContent = '';
   $('confirm-message').textContent = '';
+  $('confirm-details').replaceChildren();
   if (returnFocus?.isConnected) returnFocus.focus();
   returnFocus = null;
   resolve(ok);

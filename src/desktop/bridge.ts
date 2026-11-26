@@ -7,6 +7,7 @@ export interface FileSync { url: string; username: string; since: number }
 export interface OpenedFile { path: string; header: unknown; notes: unknown[]; dirty: string[]; sync: FileSync | null }
 export interface AppInfo { version: string; recent: string[]; defaultSyncUrl: string; launchFile: string | null }
 export interface FileAssociation { available: boolean; enabled: boolean }
+export type CloseAction = 'ask' | 'tray' | 'exit';
 export interface FileChanges {
   notes?: { envelope: Envelope; dirty: boolean }[];
   header?: VaultHeader;
@@ -16,6 +17,11 @@ export interface FileChanges {
 interface PyApi {
   app_info(): Promise<AppInfo>;
   forget_recent(path: string): Promise<void>;
+  clipboard_text(): Promise<string>;
+  close_action(): Promise<CloseAction>;
+  set_close_action(action: CloseAction): Promise<CloseAction>;
+  tray_available(): Promise<boolean>;
+  close_choice(choice: 'tray' | 'exit' | 'cancel', remember: boolean): Promise<void>;
   file_association(): Promise<FileAssociation>;
   set_file_association(enabled: boolean): Promise<FileAssociation>;
   pick_open(): Promise<string | null>;

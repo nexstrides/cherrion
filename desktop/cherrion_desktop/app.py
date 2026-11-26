@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -13,11 +15,23 @@ from typing import Any
 
 import webview
 
-from . import __version__, remote, winassoc
+from . import __version__, clipboard, instance, remote, winassoc
 from .server import serve
 from .vaultfile import EXTENSION, VaultFile, VaultFileError
 
 DEFAULT_SYNC_URL = 'https://cherrion-note.vercel.app'
+log = logging.getLogger('cherrion')
+
+
+def setup_logging(home: Path) -> None:
+    """Warnings and errors go to cherrion.log in the app-data folder (never note content: the app
+    only ever has ciphertext on this side), so problems on other PCs can be reported."""
+    handler = logging.handlers.RotatingFileHandler(home / 'cherrion.log', maxBytes=256_000, backupCount=1, encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    for name in ('cherrion', 'pywebview'):
+        logger = logging.getLogger(name)
+        logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
 FILE_TYPES = (f'Cherrion vault (*{EXTENSION})', 'All files (*.*)')
 MAX_RECENT = 8
 
@@ -56,17 +70,30 @@ def web_root() -> Path:
     return Path(__file__).resolve().parents[2] / 'dist-desktop'
 
 
+CLOSE_ACTIONS = ('ask', 'tray', 'exit')
+
+
 class Config:
-    """Device preferences that are not secret: recently opened files."""
+    """Device preferences that are not secret: recently opened files, what closing the window does."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
         try:
-            data = json.loads(path.read_text('utf-8'))
+            # utf-8-sig: still readable if an editor (e.g. Notepad) saved it with a byte-order mark.
+            data = json.loads(path.read_text('utf-8-sig'))
         except (OSError, ValueError):
             data = {}
-        recent = data.get('recent') if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            data = {}
+        recent = data.get('recent')
         self.recent: list[str] = [p for p in recent if isinstance(p, str)] if isinstance(recent, list) else []
+        close = data.get('closeAction')
+        self.close_action: str = close if close in CLOSE_ACTIONS else 'ask'
+
+    def set_close_action(self, action: str) -> None:
+        if action in CLOSE_ACTIONS:
+            self.close_action = action
+            self._save()
 
     def remember(self, path: Path) -> None:
         text = str(path)
@@ -80,7 +107,7 @@ class Config:
 
     def _save(self) -> None:
         tmp = self._path.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'recent': self.recent}, indent=2), 'utf-8')
+        tmp.write_text(json.dumps({'recent': self.recent, 'closeAction': self.close_action}, indent=2), 'utf-8')
         os.replace(tmp, self._path)
 
 
@@ -94,6 +121,72 @@ class Api:
         self._lock = threading.Lock()
         self._close_ok = False
         self._launch_file = launch_file
+        self._tray: Any = None
+        self._tray_failed = False
+        self._exiting = False
+
+    # ---- Closing: exit, or keep running in the tray ----
+
+    def close_action(self) -> str:
+        """'ask', 'tray' or 'exit': what closing the window does (Settings)."""
+        return self._config.close_action if self._tray_available() else 'exit'
+
+    def set_close_action(self, action: str) -> str:
+        self._config.set_close_action(action)
+        return self.close_action()
+
+    def tray_available(self) -> bool:
+        return self._tray_available()
+
+    def close_choice(self, choice: str, remember: bool = False) -> None:
+        """The page's answer to "Close Cherrion?": 'tray', 'exit' or 'cancel'."""
+        if choice not in ('tray', 'exit'):
+            return
+        if remember:
+            self._config.set_close_action(choice)
+        target = self._hide_to_tray if choice == 'tray' else self._finish_and_close
+        threading.Thread(target=target, daemon=True).start()
+
+    def _tray_available(self) -> bool:
+        return os.name == 'nt' and not self._tray_failed
+
+    def _ensure_tray(self) -> bool:
+        if self._tray is not None:
+            return True
+        try:
+            from webview.platforms.winforms import BrowserView  # the window's WinForms form
+            from .tray import Tray
+            self._tray = Tray(BrowserView.instances[self._window.uid], icon_path(), self._show_window, self._tray_lock, self._finish_and_close)
+            return True
+        except Exception:  # noqa: BLE001 - no tray (e.g. another GUI backend): closing just exits
+            self._tray_failed = True
+            return False
+
+    def _hide_to_tray(self) -> None:
+        if not self._ensure_tray():
+            self._finish_and_close()
+            return
+        self._tray.show()
+        self._window.hide()
+
+    def _show_window(self) -> None:
+        self._window.show()
+        self._window.restore()
+
+    def _tray_lock(self) -> None:
+        try:
+            self._window.evaluate_js('window.__cherrionLock ? window.__cherrionLock() : 0')
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _activate(self, launch_file: str | None) -> None:
+        """Another start of Cherrion (or a double-clicked .cherrion file) brings this window back."""
+        self._show_window()
+        if launch_file:
+            try:
+                self._window.evaluate_js(f'window.__cherrionOpenFile ? window.__cherrionOpenFile({json.dumps(launch_file)}) : 0')
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---- App ----
 
@@ -149,7 +242,8 @@ class Api:
         if not result:
             return None
         path = Path(result if isinstance(result, str) else result[0])
-        path.write_text(str(text), 'utf-8')
+        # newline='' writes exactly what the page produced (no \n -> \r\n translation on Windows).
+        path.write_text(str(text), 'utf-8', newline='')
         return str(path)
 
     # ---- Vault file ----
@@ -198,6 +292,11 @@ class Api:
             self._vault.close()
             self._vault = None
 
+    # ---- Clipboard (right-click Paste; the page itself would need a permission prompt) ----
+
+    def clipboard_text(self) -> str:
+        return clipboard.read_text()
+
     # ---- Sync server ----
 
     def http_post(self, base_url: str, endpoint: str, body: str, token: str | None = None) -> dict:
@@ -206,13 +305,31 @@ class Api:
     # ---- Window lifecycle ----
 
     def _on_closing(self) -> bool:
-        """Lets the page write its last edits to the file before the window goes away."""
+        """The close button: hide to the tray, exit, or ask (the remembered choice decides). Exiting
+        lets the page write its last edits to the file first. Runs on the UI thread, so the work
+        happens in a Python thread."""
         if self._close_ok:
             return True
-        threading.Thread(target=self._finish_and_close, daemon=True).start()
+        action = self.close_action()
+        target = self._hide_to_tray if action == 'tray' else self._finish_and_close if action == 'exit' else self._ask_close
+        threading.Thread(target=target, daemon=True).start()
         return False
 
+    def _ask_close(self) -> None:
+        try:
+            self._show_window()
+            asked = self._window.evaluate_js('window.__cherrionAskClose ? (window.__cherrionAskClose(), true) : false')
+        except Exception:  # noqa: BLE001
+            log.exception('Could not ask how to close; exiting')
+            asked = False
+        if not asked:  # the page cannot ask (e.g. it failed to load): just exit
+            self._finish_and_close()
+
     def _finish_and_close(self) -> None:
+        with self._lock:
+            if self._exiting:
+                return
+            self._exiting = True
         try:
             self._window.evaluate_js('window.__cherrionBeforeClose ? window.__cherrionBeforeClose() : 0')
             deadline = time.monotonic() + 5
@@ -225,6 +342,8 @@ class Api:
         finally:
             self._close_ok = True
             self.vault_close()
+            if self._tray is not None:
+                self._tray.dispose()
             self._window.destroy()
 
 
@@ -244,19 +363,29 @@ def main(argv: list[str] | None = None) -> None:
         except OSError:
             pass
 
+    home = data_dir()
+    setup_logging(home)
+    # Already running (maybe hidden in the tray)? Bring that window back instead of opening another.
+    if not args.dev and instance.activate_existing(home, launch_file):
+        return
+
+    api = Api(Config(home / 'desktop.json'), launch_file)
+    token = instance.new_token()
     if args.dev:
         url = args.dev
     else:
         root = web_root()
         if not (root / 'index.html').is_file():
             sys.exit(f'Front end not built: {root} is missing. Run `npm run build:desktop` first.')
-        url = serve(root)
+        url = serve(root, on_activate=api._activate, activate_token=token)
+        instance.register(home, url, token)
 
     set_windows_app_id()
-    home = data_dir()
-    api = Api(Config(home / 'desktop.json'), launch_file)
     window = webview.create_window('Cherrion', url, js_api=api, width=1280, height=820, min_size=(420, 520), text_select=True)
     api._window = window
     window.events.closing += api._on_closing
-    # Not private mode, so the page keeps its preferences; notes are never stored in the browser.
-    webview.start(debug=args.debug, private_mode=False, storage_path=str(home / 'WebView'), icon=icon_path())
+    try:
+        # Not private mode, so the page keeps its preferences; notes are never stored in the browser.
+        webview.start(debug=args.debug, private_mode=False, storage_path=str(home / 'WebView'), icon=icon_path())
+    finally:
+        instance.unregister(home, token)

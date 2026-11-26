@@ -30,6 +30,7 @@
           <p class="muted small">New to Cherrion?</p>
           <button type="button" id="link-signup" class="action-btn wide-btn">Create an account</button>
         </div>
+        <button type="button" class="link-btn docs-entry" data-open-docs="">📖 Documentation: how Cherrion works</button>
       </form>
 
       <form id="panel-signup" class="lock-panel hidden" novalidate>
@@ -111,6 +112,7 @@
           <button type="button" id="link-create-file" class="action-btn wide-btn">＋ Create a new vault file</button>
           <button type="button" id="link-download-account" class="action-btn wide-btn">☁ Sync with an online account</button>
         </div>
+        <button type="button" class="link-btn docs-entry" data-open-docs="">📖 Documentation: how Cherrion works</button>
       </form>
 
       <form id="panel-create" class="lock-panel hidden" novalidate>
@@ -226,6 +228,7 @@
           </div>
           <button id="btn-popout" class="action-btn" title="Float as an always-on-top sticky window" aria-label="Pop-Out"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg><span class="btn-label">Pop-Out</span></button>
           <button id="btn-add-child" class="action-btn" title="Add a sub-page under this page" aria-label="Sub-note"><span data-icon="subPage"></span><span class="btn-label">Sub-note</span></button>
+          <button id="btn-page-more" class="action-btn" title="More: export or import pages" aria-label="More page actions"><span data-icon="more"></span></button>
           <button id="btn-delete-note" class="action-btn danger" title="Delete this page" aria-label="Delete page">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 3h4a1 1 0 0 1 1 1v3H9V4a1 1 0 0 1 1-1zM6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" /></svg><span class="btn-label">Delete</span>
           </button>
@@ -262,9 +265,57 @@
     <div class="modal-card modal-small">
       <h3 id="confirm-title" class="confirm-title"></h3>
       <p id="confirm-message" class="confirm-message"></p>
+      <ul id="confirm-details" class="confirm-details hidden"></ul>
       <div class="modal-actions end">
         <button type="button" id="confirm-cancel" class="action-btn">Cancel</button>
         <button type="button" id="confirm-ok" class="primary-btn">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Website: the session could not be renewed (e.g. password changed on another device). -->
+  <div id="relogin-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="relogin-title">
+    <div class="modal-card modal-small">
+      <form id="relogin-form" novalidate>
+        <h3 id="relogin-title" class="confirm-title">Log in again</h3>
+        <p class="confirm-message">Your session for <strong id="relogin-account"></strong> could not be renewed, for example because the password was changed on another device. Enter your current password to keep working. <span id="relogin-unsaved"></span></p>
+        <input id="relogin-username" type="text" autocomplete="username" hidden />
+        <label class="field-label">Password
+          <input id="relogin-password" type="password" autocomplete="current-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <div class="modal-actions end">
+          <button type="button" id="relogin-logout" class="action-btn">Log out</button>
+          <button type="submit" class="primary-btn">Log in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Built-in documentation (src/ui/docs.ts fills it). -->
+  <div id="docs-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="docs-title">
+    <div class="modal-card docs-card">
+      <div class="modal-header">
+        <h3 id="docs-title">📖 Cherrion documentation</h3>
+        <button id="btn-close-docs" aria-label="Close">✕</button>
+      </div>
+      <div class="docs-layout">
+        <nav id="docs-toc" class="docs-toc" aria-label="Contents"></nav>
+        <div id="docs-content" class="docs-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Desktop: what the window's close button does. -->
+  <div id="close-modal" class="modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-message">
+    <div class="modal-card modal-small">
+      <h3 id="close-title" class="confirm-title">Close Cherrion?</h3>
+      <p id="close-message" class="confirm-message">Hide it in the system tray to keep it running (double-click the 🍒 icon by the clock to come back), or exit the app.</p>
+      <label class="check"><input id="close-remember" type="checkbox" /> Don't ask again (you can change this in ⚙ Settings)</label>
+      <div class="modal-actions end">
+        <button type="button" id="close-cancel" class="action-btn">Cancel</button>
+        <button type="button" id="close-exit" class="action-btn"><span data-icon="power"></span>Exit</button>
+        <button type="button" id="close-tray" class="primary-btn"><span data-icon="tray"></span>Hide to tray</button>
       </div>
     </div>
   </div>
@@ -302,6 +353,11 @@
       <h4 class="section-title"><span class="web-only">Account</span><span class="desktop-only">Vault file</span></h4>
       <p class="small web-only">Signed in as <strong id="settings-account"></strong>. Notes are saved to your account automatically and are encrypted before they leave this browser.</p>
       <p class="small desktop-only">Open file: <strong id="settings-file-path" class="file-path"></strong>. Every change is encrypted and saved to this file as you type.</p>
+      <div id="close-action-wrap" class="desktop-only">
+        <div class="field-label">When I close the window
+          <div id="select-close-action"></div>
+        </div>
+      </div>
       <div class="desktop-only">
         <label class="check"><input id="input-file-assoc" type="checkbox" /> Open .cherrion files with Cherrion when double-clicked in File Explorer</label>
         <p id="file-assoc-hint" class="muted small hidden"></p>
@@ -380,6 +436,68 @@
         <code id="new-recovery-key" class="recovery-key"></code>
         <button type="button" id="btn-copy-new-recovery" class="action-btn"><span data-icon="copy"></span>Copy</button>
       </div>
+    </div>
+  </div>
+
+  <div id="transfer-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="transfer-title">Export page</h3>
+        <button id="btn-close-transfer" aria-label="Close">✕</button>
+      </div>
+
+      <form id="form-export" novalidate>
+        <p id="export-what" class="muted small"></p>
+        <fieldset id="export-format" class="start-with">
+          <legend>Format</legend>
+          <label class="check"><input type="radio" name="export-format" value="page" checked /> Cherrion page file (.cherrion-page): everything, ready to import again</label>
+          <label class="check"><input type="radio" name="export-format" value="md" /> Markdown (.md): readable in any text editor</label>
+        </fieldset>
+        <label id="export-subpages-wrap" class="check"><input id="export-subpages" type="checkbox" checked /> <span id="export-subpages-text">Include sub-pages</span></label>
+        <div id="export-page-options">
+          <label class="check"><input id="export-encrypt" type="checkbox" checked /> Protect with a password (asked for when importing)</label>
+          <div id="export-password-wrap">
+            <label class="field-label">File password
+              <input id="export-password" type="password" autocomplete="new-password" />
+            </label>
+            <label class="field-label">Confirm file password
+              <input id="export-confirm" type="password" autocomplete="new-password" />
+            </label>
+            <p class="muted small">Only this password opens the file. It is separate from your vault password and can't be recovered.</p>
+          </div>
+          <p id="export-plain-warning" class="notice warn hidden">Without a password the file is not encrypted: anyone who gets it can read everything in it, including passwords and 2FA secrets.</p>
+        </div>
+        <div id="export-md-options" class="hidden">
+          <label class="check"><input id="export-secrets" type="checkbox" /> Include secret values (passwords, secret notes, 2FA keys)</label>
+          <p class="muted small">Markdown files are never encrypted. Secret values are written as •••••••• unless you include them.</p>
+        </div>
+        <p class="form-error hidden" role="alert"></p>
+        <div class="modal-actions end">
+          <button type="button" class="action-btn" data-close-transfer>Cancel</button>
+          <button type="submit" class="primary-btn"><span data-icon="download"></span>Export</button>
+        </div>
+      </form>
+
+      <form id="form-import" class="hidden" novalidate>
+        <p class="muted small">Import a .cherrion-page file, or a Markdown or text file. Imported pages are added as new pages: nothing you already have is changed.</p>
+        <label class="field-label">File
+          <input id="import-file" type="file" accept=".cherrion-page,.json,.md,.markdown,.txt" />
+        </label>
+        <p id="import-file-info" class="muted small hidden"></p>
+        <fieldset id="import-where" class="start-with">
+          <legend>Put it</legend>
+          <label class="check"><input type="radio" name="import-where" value="top" checked /> At the top level</label>
+          <label id="import-under-wrap" class="check"><input type="radio" name="import-where" value="under" /> <span id="import-under-text">Under the current page</span></label>
+        </fieldset>
+        <label id="import-password-wrap" class="field-label hidden">File password
+          <input id="import-password" type="password" autocomplete="off" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <div class="modal-actions end">
+          <button type="button" class="action-btn" data-close-transfer>Cancel</button>
+          <button type="submit" class="primary-btn"><span data-icon="upload"></span>Import</button>
+        </div>
+      </form>
     </div>
   </div>
 

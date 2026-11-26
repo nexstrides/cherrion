@@ -6,8 +6,9 @@ import type { Envelope } from '../src/envelope';
 import { encryptNote } from '../src/envelope';
 import { normalizeNote } from '../src/model';
 import * as store from '../src/store';
+import { setTransport } from '../src/api';
 import {
-  createVault, readProfile, rewrapPasswordWithAuth, setProfile, unlockWithPassword, type VaultHeader,
+  authKeyFromKek, createVault, deriveKek, readProfile, rewrapPasswordWithAuth, setProfile, unlockWithPassword, type VaultHeader,
 } from '../src/vault';
 
 const FAST = { opslimit: 1, memlimit: 8192 };
@@ -69,6 +70,22 @@ describe('desktop journal', () => {
     store.markAllUnsent();
     expect(store.outgoing().map(e => e.id).sort()).toEqual(['a', 'b']);
     expect(log.put).toEqual([[['a', 'b'], true]]);
+  });
+});
+
+describe('online accounts', () => {
+  it('hands the new login key to its keepers after a password change', async () => {
+    const v = createVault(PASSWORD, FAST);
+    store.unlock(v.header, v.vaultKey, []);
+    store.setRemoteAccount(true);
+    // A fake server that accepts the change and echoes the new header.
+    setTransport(async (_path, body) => ({ status: 200, data: { header: JSON.parse(body).header } }));
+    const seen: Uint8Array[] = [];
+    store.onAuthKeyChange(key => seen.push(key.slice()));
+    await store.changePassword(PASSWORD, 'a brand new password');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(authKeyFromKek(deriveKek('a brand new password', store.getHeader()!.kdf)));
+    setTransport(async () => ({ status: 0, data: {} }));
   });
 });
 

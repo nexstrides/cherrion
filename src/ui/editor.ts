@@ -2,21 +2,24 @@
 // cursor survives); structural edits re-render and then restore focus with focusBlock/focusField.
 import {
   CATEGORY_IDS, field, fieldsBlock, isSecretKind, isTextBlock, SECRET_MASK, STICKY_COLORS, tableBlock, textBlock, uid,
-  type Block, type CategoryId, type Field, type FieldKind, type FieldsBlock, type Note, type PageBlock,
+  type Block, type CategoryId, type Field, type FieldKind, type FieldsBlock, type ImageBlock, type Note, type PageBlock,
   type StickyColor, type TextBlock, type TextBlockType,
 } from '../model';
 import * as store from '../store';
-import { CATEGORIES } from '../templates';
+import { applyForm, CATEGORIES, describeForm, formForCategory, hasForm } from '../templates';
 import { confirmDialog } from './dialog';
 import { $, $input, autoResize, el, toast } from './dom';
-import { createDropdown, createMenuButton, mountDropdown, type Dropdown } from './dropdown';
+import { addContextMenu, type ContextMenu } from './contextMenu';
+import { createDropdown, createMenuButton, mountDropdown, openContextMenu, SEPARATOR, type Dropdown, type DropdownOption } from './dropdown';
+import { proxyFields, syncProxyFields } from '../proxy';
 import { parseTotp, secondsRemaining, totpCode, type TotpParams } from '../totp';
 import { openTemplatePicker } from './picker';
 import { render, selectNote, ui } from './state';
+import { addPictures, choosePictureFiles, pictureFiles, renderImage } from './images';
 import { focusCell, renderTable } from './tableBlock';
 import { createTotpDisplay } from './totpWidget';
 
-type SlashType = TextBlockType | 'divider' | 'fields' | 'secret' | 'totp' | 'page' | 'table';
+type SlashType = TextBlockType | 'divider' | 'fields' | 'secret' | 'totp' | 'page' | 'table' | 'image';
 interface SlashCommand { type: SlashType; label: string; icon: string; hint: string }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -29,6 +32,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { type: 'quote', label: 'Quote', icon: '❝', hint: 'Blockquote' },
   { type: 'code', label: 'Code Block', icon: '<>', hint: 'Monospace snippet' },
   { type: 'table', label: 'Table', icon: '▦', hint: 'Rows and columns' },
+  { type: 'image', label: 'Picture', icon: '🖼', hint: 'Add a picture from a file (you can also paste or drop one)' },
   { type: 'divider', label: 'Divider', icon: '―', hint: 'Horizontal line' },
   { type: 'fields', label: 'Field group', icon: '▤', hint: 'Labelled inputs' },
   { type: 'secret', label: 'Secret field', icon: '🔒', hint: 'Hidden value with copy' },
@@ -164,10 +168,42 @@ function renderMeta(note: Note): void {
       store.touchNote(note);
       $input('note-title').placeholder = CATEGORIES[note.category].titlePlaceholder;
       render.tree();
+      void offerCategoryForm(note.id);
     },
   });
   const info = el('span', { className: 'meta-info', text: `Updated ${new Date(note.updatedAt).toLocaleString()} • ${note.blocks.length} block(s)` });
   $('note-meta').replaceChildren(category.el, info);
+}
+
+/** After a category change: offers to add that category's predefined form (unless the page has it). */
+async function offerCategoryForm(noteId: string): Promise<void> {
+  const before = store.getNote(noteId);
+  if (!before || before.deleted) return;
+  const category = before.category;
+  const template = formForCategory(category);
+  if (!template || hasForm(before, template)) return;
+  const { label, icon } = CATEGORIES[category];
+  const blank = before.blocks.every(b => b.type === 'p' && !b.content.trim());
+  const ok = await confirmDialog({
+    title: `Add the ${label} form?`,
+    message: blank
+      ? `${icon} This page is now ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}. Fill it with the ${label} form:`
+      : `${icon} This page is now ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}. Add the ${label} form at the top? Nothing on the page is removed.`,
+    details: describeForm(template),
+    confirmLabel: 'Add form',
+    cancelLabel: 'Not now',
+    danger: false,
+  });
+  // The page may have been replaced (sync) or changed again while the dialog was open.
+  const note = store.getNote(noteId);
+  if (!ok || !note || note.deleted || note.category !== category || hasForm(note, template)) return;
+  const first = applyForm(note, template);
+  store.touchNote(note);
+  if (ui.activeNoteId !== noteId) return;
+  renderEditor();
+  const firstField = first?.type === 'fields' ? first.fields[0] : undefined;
+  if (firstField) focusField(firstField.id, firstField.kind === 'totp' ? 'label' : 'value');
+  else if (first) focusBlock(first.id);
 }
 
 function ctrlButton(text: string, label: string, onclick: () => void): HTMLButtonElement {
@@ -217,10 +253,55 @@ function renderBlock(note: Note, block: Block): HTMLElement {
         else if (dir > 0) addBlockAtEnd(note);
       },
     });
-  } else renderTextBlock(note, block, row, body);
+  } else if (block.type === 'image') renderImage(note, block, body);
+  else renderTextBlock(note, block, row, body);
 
   row.append(ctrls, body);
   return row;
+}
+
+/** Adds picture files after `afterId` and shows them (used by "/picture", paste and drop). */
+async function insertPictures(noteId: string, files: File[], afterId: string | null): Promise<ImageBlock[]> {
+  if (files.length) toast(files.length === 1 ? 'Adding picture…' : `Adding ${files.length} pictures…`, 'info', 1500);
+  const added = await addPictures(noteId, files, afterId);
+  if (added.length && ui.activeNoteId === noteId) {
+    renderEditor();
+    focusBlock(added[added.length - 1]!.id);
+  }
+  return added;
+}
+
+/** Paste a picture into a page, or drop picture files onto it. Other drops never navigate away. */
+export function wireEditorPictures(): void {
+  const view = $('editor-view');
+  view.addEventListener('paste', e => {
+    const files = pictureFiles(e.clipboardData);
+    const note = currentNote();
+    if (!files.length || !note) return;
+    e.preventDefault();
+    const row = (e.target as Element | null)?.closest?.<HTMLElement>('.block-row');
+    void insertPictures(note.id, files, row?.dataset.blockId ?? null);
+  });
+  const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes('Files');
+  view.addEventListener('dragover', e => {
+    if (!hasFiles(e) || !currentNote()) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    view.classList.add('drop-target');
+  });
+  view.addEventListener('dragleave', e => { if (!view.contains(e.relatedTarget as Node | null)) view.classList.remove('drop-target'); });
+  view.addEventListener('drop', e => {
+    view.classList.remove('drop-target');
+    const note = currentNote();
+    const files = pictureFiles(e.dataTransfer);
+    if (!note || !files.length) return;
+    e.preventDefault();
+    const row = (e.target as Element | null)?.closest?.<HTMLElement>('.block-row');
+    void insertPictures(note.id, files, row?.dataset.blockId ?? note.blocks[note.blocks.length - 1]?.id ?? null);
+  });
+  // A file dropped anywhere else would make the window open it and leave the app.
+  window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('drop', e => { if (hasFiles(e)) e.preventDefault(); });
 }
 
 function renderPageLink(block: PageBlock, body: HTMLElement): void {
@@ -277,16 +358,19 @@ function renderFields(note: Note, block: FieldsBlock, body: HTMLElement): void {
   for (const f of block.fields) group.append(renderFieldRow(note, block, f));
 
   const add = (kind: FieldKind) => {
-    const f = field(kind === 'totp' ? '2FA code' : '', kind);
+    const f = field(kind === 'totp' ? '2FA code' : kind === 'secret-text' ? 'Secret note' : '', kind);
     block.fields.push(f);
     if (kind === 'totp') ui.editing.add(f.id);
+    // A new secret note opens for typing; it is hidden again when the page changes or locks.
+    if (kind === 'secret-text') ui.revealed.add(f.id);
     store.touchNote(note);
     renderEditor();
-    focusField(f.id, kind === 'totp' ? 'value' : 'label');
+    focusField(f.id, kind === 'totp' || kind === 'secret-text' ? 'value' : 'label');
   };
   group.append(el('div', { className: 'fg-actions' },
     el('button', { className: 'fg-add', type: 'button', text: '+ Field', onclick: () => add('text') }),
     el('button', { className: 'fg-add', type: 'button', text: '+ Secret field', onclick: () => add('password') }),
+    el('button', { className: 'fg-add', type: 'button', text: '+ Secret note', title: 'Hidden multi-line text, e.g. recovery codes or a license', onclick: () => add('secret-text') }),
     el('button', { className: 'fg-add', type: 'button', text: '+ 2FA code', onclick: () => add('totp') }),
   ));
   body.append(group);
@@ -326,7 +410,12 @@ function renderFieldRow(note: Note, block: FieldsBlock, f: Field): HTMLElement {
     input.setAttribute('aria-label', valueLabel);
     input.autocomplete = f.kind === 'password' ? 'new-password' : 'off';
     if (secret) input.spellcheck = false;
-    input.addEventListener('input', () => { f.value = input.value; store.touchNote(note); });
+    input.addEventListener('input', e => {
+      const before = f.value;
+      f.value = input.value;
+      syncProxyInPage(block, f, before, (e as InputEvent).inputType === 'insertFromPaste');
+      store.touchNote(note);
+    });
     value.append(input);
   }
 
@@ -339,6 +428,25 @@ function renderFieldRow(note: Note, block: FieldsBlock, f: Field): HTMLElement {
 
   row.append(label, value, tools);
   return row;
+}
+
+/**
+ * Proxy forms: a pasted "ip:port:user:password" link fills the IP address, port, user and password
+ * fields, and editing those rebuilds the link. Inputs are updated in place, so the cursor stays put.
+ */
+function syncProxyInPage(block: FieldsBlock, edited: Field, before: string, pasted: boolean): void {
+  const changed = syncProxyFields(block, edited, before);
+  for (const f of changed) {
+    const input = document.querySelector<HTMLInputElement>(`[data-field-id="${CSS.escape(f.id)}"] .fg-input`);
+    if (!input) continue;
+    input.value = f.value;
+    input.classList.remove('autofilled');
+    void input.offsetWidth; // restart the highlight
+    input.classList.add('autofilled');
+  }
+  if (pasted && changed.length && changed.every(f => f !== edited) && proxyFields(block)?.link === edited) {
+    toast('Filled IP address, port, user and password from the link.');
+  }
 }
 
 /**
@@ -445,6 +553,8 @@ async function confirmRemoveBlock(note: Note, block: Block): Promise<void> {
         : 'The link to the deleted page is removed.',
       confirmLabel: 'Remove',
     };
+  } else if (block.type === 'image') {
+    question = { title: 'Delete picture?', message: 'The picture is removed from this page.' };
   } else if (block.type === 'table') {
     if (block.rows.some(r => r.some(c => c.trim()))) {
       question = { title: 'Delete table?', message: `The table (${block.rows.length} × ${block.rows[0]?.length ?? 0}) and its text will be deleted.` };
@@ -595,7 +705,7 @@ const SELECTABLE = new Set(['text', 'password', 'url', 'tel', 'search']);
 export function focusBlock(blockId: string, atEnd = false): void {
   requestAnimationFrame(() => {
     const row = document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
-    const targets = row?.querySelectorAll<HTMLElement>('.block-input, .fg-input, .secret-mask, .page-link, .table-cell');
+    const targets = row?.querySelectorAll<HTMLElement>('.block-input, .fg-input, .secret-mask, .page-link, .table-cell, .image-caption');
     const target = targets && (atEnd ? targets[targets.length - 1] : targets[0]);
     if (!target) return;
     target.focus();
@@ -683,6 +793,26 @@ function applySlashCommand(note: Note, block: TextBlock, type: SlashType): void 
     });
     return;
   }
+  if (type === 'image') {
+    // Pick files; the pictures replace the empty paragraph the command was typed in.
+    block.content = '';
+    store.touchNote(note);
+    renderEditor();
+    const noteId = note.id;
+    const blockId = block.id;
+    void choosePictureFiles().then(async files => {
+      if (!files.length) { focusBlock(blockId); return; }
+      const added = await insertPictures(noteId, files, blockId);
+      const current = store.getNote(noteId);
+      const placeholder = current?.blocks.find(b => b.id === blockId);
+      if (current && added.length && placeholder?.type === 'p' && !placeholder.content) {
+        current.blocks.splice(indexOf(current, blockId), 1);
+        store.touchNote(current);
+        if (ui.activeNoteId === noteId) { renderEditor(); focusBlock(added[added.length - 1]!.id); }
+      }
+    });
+    return;
+  }
   if (type === 'table') {
     const table = tableBlock();
     replaceBlock(note, block.id, table);
@@ -707,6 +837,74 @@ function applySlashCommand(note: Note, block: TextBlock, type: SlashType): void 
   store.touchNote(note);
   renderEditor();
   focusBlock(block.id);
+}
+
+// ---- Right-click menu on blocks (desktop) ----
+
+export function wireEditorContextMenu(): void {
+  addContextMenu($('blocks-container'), blockContextMenu);
+}
+
+const TURN_INTO: { type: TextBlockType; label: string; icon: string }[] = [
+  { type: 'p', label: 'Text', icon: '¶' }, { type: 'h1', label: 'Heading 1', icon: 'H1' }, { type: 'h2', label: 'Heading 2', icon: 'H2' },
+  { type: 'todo', label: 'To-do', icon: '☑' }, { type: 'callout', label: 'Callout', icon: '💡' }, { type: 'quote', label: 'Quote', icon: '❝' },
+  { type: 'code', label: 'Code', icon: '<>' },
+];
+
+/** A copy of a block with fresh ids (fields too), so the two can be edited separately. */
+function cloneBlock(block: Block): Block {
+  const copy = structuredClone(block);
+  copy.id = uid();
+  if (copy.type === 'fields') copy.fields = copy.fields.map(f => ({ ...f, id: uid() }));
+  return copy;
+}
+
+function blockContextMenu(e: MouseEvent): ContextMenu | null {
+  const note = currentNote();
+  const row = (e.target as Element).closest<HTMLElement>('.block-row');
+  const block = note && row ? note.blocks.find(b => b.id === row.dataset.blockId) : undefined;
+  if (!note || !block) return null;
+  const idx = indexOf(note, block.id);
+  const { clientX: x, clientY: y } = e;
+  const items: DropdownOption[] = [
+    ...(isTextBlock(block) ? [{ value: 'turn', label: 'Turn into…', svg: 'turnInto' as const }] : []),
+    { value: 'insert', label: 'Insert below…', svg: 'plus' },
+    { value: 'duplicate', label: 'Duplicate', svg: 'copy' },
+    SEPARATOR,
+    { value: 'up', label: 'Move up', svg: 'arrowUp', disabled: idx <= 0 },
+    { value: 'down', label: 'Move down', svg: 'arrowDown', disabled: idx >= note.blocks.length - 1 },
+    SEPARATOR,
+    { value: 'delete', label: 'Delete block', svg: 'trash', danger: true },
+  ];
+  return {
+    label: 'Block',
+    items,
+    onSelect: action => {
+      if (action === 'up' || action === 'down') moveBlock(note, block.id, action === 'up' ? -1 : 1);
+      else if (action === 'delete') void confirmRemoveBlock(note, block);
+      else if (action === 'duplicate') {
+        const copy = cloneBlock(block);
+        note.blocks.splice(indexOf(note, block.id) + 1, 0, copy);
+        store.touchNote(note);
+        renderEditor();
+        focusBlock(copy.id);
+      } else if (action === 'turn' && isTextBlock(block)) {
+        openContextMenu(x, y, 'Turn into', TURN_INTO.map(t => ({ value: t.type, label: t.label, icon: t.icon, hint: t.type === block.type ? '✓' : '' })), type => {
+          setTextType(block, type as TextBlockType);
+          store.touchNote(note);
+          renderEditor();
+          focusBlock(block.id, true);
+        });
+      } else if (action === 'insert') {
+        openContextMenu(x, y, 'Insert below', SLASH_COMMANDS.map(c => ({ value: c.type, label: c.label, icon: c.icon })), type => {
+          // An empty paragraph below, then the same conversion the "/" menu does.
+          const fresh = textBlock();
+          note.blocks.splice(indexOf(note, block.id) + 1, 0, fresh);
+          applySlashCommand(note, fresh, type as SlashType);
+        });
+      }
+    },
+  };
 }
 
 export function closeSlashMenu(): void {

@@ -16,5 +16,5 @@
     "noEmit": true
   },
   "include": ["src", "tests"],
-  "exclude": ["tests/server.test.ts"]
+  "exclude": ["tests/server.test.ts", "tests/pictures.test.ts"]
 }

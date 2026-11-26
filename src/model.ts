@@ -29,9 +29,28 @@ export interface PageBlock { id: string; type: 'page'; pageId: string }
 export interface TableBlock { id: string; type: 'table'; header: boolean; rows: string[][] }
 export const TABLE_LIMITS = { rows: 200, cols: 20, cell: 10_000 } as const;
 
-export type Block = TextBlock | DividerBlock | FieldsBlock | PageBlock | TableBlock;
+/**
+ * A picture stored inside the page (so it is encrypted and synced with it) as a data: URL, already
+ * shrunk and compressed when it was added. width/height are its pixel size (0 when unknown).
+ */
+export interface ImageBlock { id: string; type: 'image'; src: string; width: number; height: number; caption: string }
+export const IMAGE_LIMITS = {
+  /** Longest side after shrinking. */
+  maxSide: 1600,
+  /** Largest data: URL for one picture (about 1.1 MB of image data). */
+  maxSrc: 1_500_000,
+  /** All pictures on one page together, so a page stays under the sync request limit. */
+  pageSrc: 2_800_000,
+} as const;
+export const IMAGE_SRC = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
 
-export const CATEGORY_IDS = ['note', 'email', 'login', 'secure', 'meeting'] as const;
+export type Block = TextBlock | DividerBlock | FieldsBlock | PageBlock | TableBlock | ImageBlock;
+
+/** Size of the pictures on a page (data: URL characters). */
+export const pictureBytes = (note: Note): number =>
+  note.blocks.reduce((n, b) => n + (b.type === 'image' ? b.src.length : 0), 0);
+
+export const CATEGORY_IDS = ['note', 'email', 'login', 'proxy', 'secure', 'meeting'] as const;
 export type CategoryId = (typeof CATEGORY_IDS)[number];
 
 export interface Note {
@@ -87,6 +106,7 @@ export function searchableText(note: Note): string {
   for (const b of note.blocks) {
     if (isTextBlock(b)) parts.push(b.content);
     else if (b.type === 'table') parts.push(...b.rows.flat());
+    else if (b.type === 'image') parts.push(b.caption);
     else if (b.type === 'fields') {
       for (const f of b.fields) {
         parts.push(f.label);
@@ -103,6 +123,7 @@ export function noteToPlainText(note: Note, titleOf: (id: string) => string | un
   for (const b of note.blocks) {
     if (b.type === 'divider') lines.push('———');
     else if (b.type === 'page') lines.push(`📄 ${titleOf(b.pageId) || 'Untitled'}`);
+    else if (b.type === 'image') lines.push(`🖼 ${b.caption || 'Picture'}`);
     else if (b.type === 'table') {
       for (const row of b.rows) lines.push(`| ${row.map(c => c.replace(/\s*\n\s*/g, ' ')).join(' | ')} |`);
     } else if (b.type === 'fields') {
@@ -160,6 +181,12 @@ export function normalizeBlock(raw: unknown): Block | null {
   if (raw.type === 'fields') {
     const fields = Array.isArray(raw.fields) ? raw.fields.map(normalizeField).filter((f): f is Field => f !== null) : [];
     return { id, type: 'fields', fields };
+  }
+  if (raw.type === 'image') {
+    const src = str(raw.src);
+    if (!IMAGE_SRC.test(src) || src.length > IMAGE_LIMITS.maxSrc) return null;
+    const dim = (x: unknown) => (typeof x === 'number' && Number.isInteger(x) && x > 0 && x <= 20_000 ? x : 0);
+    return { id, type: 'image', src, width: dim(raw.width), height: dim(raw.height), caption: str(raw.caption).slice(0, 500) };
   }
   if (raw.type === 'table') {
     const rows = (Array.isArray(raw.rows) ? raw.rows : []).filter(Array.isArray).slice(0, TABLE_LIMITS.rows)

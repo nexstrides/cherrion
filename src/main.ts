@@ -4,6 +4,7 @@ import { startBridge } from './desktop/bridge';
 import { DESKTOP } from './platform';
 import { settings } from './settings';
 import { wireApp } from './ui/app';
+import { wireContextMenus } from './ui/contextMenu';
 import { hydrateIcons } from './ui/dom';
 import { showDesktopStart, wireDesktop } from './ui/desktop';
 import { showFatal, showLockScreen, wireLockScreen } from './ui/lock';
@@ -20,6 +21,7 @@ async function boot(): Promise<void> {
     // WebView2 lists Document Picture-in-Picture but refuses to open it, so no floating stickies here yet.
     document.body.classList.add('desktop', 'no-popout');
     wireDesktop();
+    wireContextMenus();
     await initCrypto();
     await startBridge();
     await showDesktopStart();

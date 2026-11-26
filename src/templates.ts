@@ -9,6 +9,7 @@ export const CATEGORIES: Record<CategoryId, Category> = {
   note: { id: 'note', label: 'Note', icon: '📝', titlePlaceholder: 'Untitled note' },
   email: { id: 'email', label: 'Email account', icon: '✉️', titlePlaceholder: 'Account name, e.g. Personal Gmail' },
   login: { id: 'login', label: 'Website login', icon: '🔑', titlePlaceholder: 'Site name, e.g. GitHub' },
+  proxy: { id: 'proxy', label: 'Proxy', icon: '🌐', titlePlaceholder: 'Proxy name, e.g. US residential #1' },
   secure: { id: 'secure', label: 'Secure note', icon: '🔒', titlePlaceholder: 'What is this? e.g. Home Wi-Fi' },
   meeting: { id: 'meeting', label: 'Meeting', icon: '📅', titlePlaceholder: 'Meeting title' },
 };
@@ -75,6 +76,23 @@ export const TEMPLATES: Template[] = [
     ],
   },
   {
+    id: 'proxy',
+    name: 'Proxy',
+    description: 'Connection link (ip:port:user:password), IP address, port, user, password and a note.',
+    category: 'proxy',
+    // The link contains the password, so it is a secret field (masked, not searchable) like the password.
+    build: () => [
+      group([
+        ['Link', 'password', 'ip:port:user:password'],
+        ['IP address', 'text', 'e.g. 203.0.113.10'],
+        ['Port', 'text', 'e.g. 8080'],
+        ['User', 'text'],
+        ['Password', 'password'],
+        ['Note', 'text', 'Provider, location, expiry…'],
+      ]),
+    ],
+  },
+  {
     id: 'secure',
     name: 'Secure note',
     description: 'One hidden text area for anything sensitive, such as Wi-Fi or license keys.',
@@ -93,6 +111,54 @@ export const TEMPLATES: Template[] = [
     },
   },
 ];
+
+/** The form (template) a category comes with, or null (plain notes have none). */
+export function formForCategory(category: CategoryId): Template | null {
+  return TEMPLATES.find(t => t.category === category && t.id !== 'blank') ?? null;
+}
+
+const fieldLabels = (blocks: Block[]) =>
+  blocks.flatMap(b => (b.type === 'fields' ? b.fields.map(f => f.label.trim().toLowerCase()) : []));
+
+/** True when the page already has every field of the form (so asking again would only duplicate it). */
+export function hasForm(note: Note, template: Template): boolean {
+  const have = new Set(fieldLabels(note.blocks));
+  const want = fieldLabels(template.build());
+  return want.length > 0 && want.every(l => have.has(l));
+}
+
+const KIND_ICONS: Record<FieldKind, string> = {
+  text: '✏️', email: '✉️', url: '🔗', tel: '📞', date: '📅', password: '🔑', 'secret-text': '🔒', totp: '🔐',
+};
+
+/** What a form adds, for the confirmation dialog: fields first, then section headings. */
+export function describeForm(template: Template): { icon: string; text: string }[] {
+  const blocks = template.build();
+  const fields = blocks.flatMap(b => (b.type === 'fields' ? b.fields.map(f => ({ icon: KIND_ICONS[f.kind], text: f.label })) : []));
+  const sections = blocks.flatMap(b => (b.type === 'h1' || b.type === 'h2' ? [{ icon: '§', text: `${b.content} section` }] : []));
+  return [...fields, ...sections];
+}
+
+/** Blank page = only empty paragraphs. */
+const isBlankPage = (note: Note) => note.blocks.every(b => b.type === 'p' && !b.content.trim());
+
+/**
+ * Adds a category's form to a page: it replaces a blank page, or goes on top of existing content
+ * (nothing is removed; trailing empty paragraphs of the form are dropped). Returns the first new block.
+ */
+export function applyForm(note: Note, template: Template): Block | null {
+  const form = template.build();
+  if (isBlankPage(note)) {
+    note.blocks = form;
+  } else {
+    while (form.length > 1) {
+      const last = form[form.length - 1]!;
+      if (last.type === 'p' && !last.content) form.pop(); else break;
+    }
+    note.blocks = [...form, ...note.blocks];
+  }
+  return form[0] ?? null;
+}
 
 export function createNoteFromTemplate(template: Template, parentId: string | null): Note {
   return {

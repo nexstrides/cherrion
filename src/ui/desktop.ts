@@ -1,7 +1,7 @@
 // Desktop app screens: open / create / download a vault file, reset its password, lock it, and the
 // "Online sync" part of Settings. The web version's login screen lives in lock.ts.
 import { DEFAULT_KDF_COST, wipe } from '../crypto';
-import { py, type AppInfo } from '../desktop/bridge';
+import { py, type AppInfo, type CloseAction } from '../desktop/bridge';
 import * as session from '../desktop/session';
 import { settings } from '../settings';
 import * as store from '../store';
@@ -12,6 +12,7 @@ import {
 } from '../vault';
 import { clearAppDom, onSettingsOpen } from './app';
 import { confirmDialog } from './dialog';
+import { mountDropdown, type Dropdown } from './dropdown';
 import { $, $input, el, toast } from './dom';
 import { clearClipboardNow } from './editor';
 import { busy, checkNewPassword, enterApp, onSubmit, setError, showPanel, username, welcomeNotes, wireRecoveryPanel } from './lock';
@@ -384,9 +385,76 @@ export async function syncNowFromUi(): Promise<void> {
   else if (s.kind === 'synced') toast('Up to date.');
 }
 
+// ---- Closing the window: exit, or keep running in the tray ----
+
+let closeDropdown: Dropdown | null = null;
+
+function closeCloseDialog(): void {
+  $('close-modal').classList.add('hidden');
+}
+
+/** Called by Python when the window's close button is pressed and no choice is remembered. */
+function askClose(): void {
+  $input('close-remember').checked = false;
+  $('close-modal').classList.remove('hidden');
+  requestAnimationFrame(() => $('close-tray').focus());
+}
+
+function chooseClose(choice: 'tray' | 'exit' | 'cancel'): void {
+  const remember = choice !== 'cancel' && $input('close-remember').checked;
+  closeCloseDialog();
+  void py('close_choice', choice, remember).then(() => {
+    if (remember) toast(choice === 'tray' ? 'Closing the window now hides Cherrion in the tray. Change this in ⚙ Settings.' : 'Closing the window now exits Cherrion. Change this in ⚙ Settings.', 'info', 6000);
+  });
+}
+
+/** Another start of the app, or a double-clicked .cherrion file, while this one runs. */
+function openFileFromSystem(path: string): void {
+  if (store.isUnlocked()) {
+    if (session.filePath()?.toLowerCase() !== path.toLowerCase()) {
+      toast(`To open ${baseName(path)}, lock this file first (🔒), then choose it.`, 'info', 7000);
+    }
+    return;
+  }
+  selected = path;
+  renderRecent();
+  showPanel('open');
+}
+
+async function renderCloseAction(): Promise<void> {
+  try {
+    const available = await py('tray_available');
+    $('close-action-wrap').classList.toggle('hidden', !available);
+    if (available) closeDropdown?.setValue(await py('close_action'));
+  } catch { $('close-action-wrap').classList.add('hidden'); }
+}
+
+function wireCloseBehaviour(): void {
+  $('close-tray').onclick = () => chooseClose('tray');
+  $('close-exit').onclick = () => chooseClose('exit');
+  $('close-cancel').onclick = () => chooseClose('cancel');
+  $('close-modal').addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); chooseClose('cancel'); } });
+  closeDropdown = mountDropdown('select-close-action', {
+    ariaLabel: 'When I close the window',
+    options: [
+      { value: 'ask', label: 'Ask every time', icon: '❔' },
+      { value: 'tray', label: 'Hide to the tray', svg: 'tray' },
+      { value: 'exit', label: 'Exit Cherrion', svg: 'power' },
+    ],
+    value: 'ask',
+    onChange: v => { void py('set_close_action', v as CloseAction).then(() => toast('Saved.')); },
+  });
+  onSettingsOpen(() => void renderCloseAction());
+  const w = window as unknown as Record<string, unknown>;
+  w.__cherrionAskClose = askClose;
+  w.__cherrionLock = () => void lockVault('Locked from the tray icon.');
+  w.__cherrionOpenFile = openFileFromSystem;
+}
+
 // ---- Wiring ----
 
 export function wireDesktop(): void {
+  wireCloseBehaviour();
   session.wireDesktopSession();
   wireStartScreen();
   wireSyncSettings();

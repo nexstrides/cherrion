@@ -47,6 +47,14 @@ Below is the **complete, structured project documentation** formatted so you can
 
 ### B. Notion-Style Block Editor (`src/ui/editor.ts`)
 * **Supported Block Types:** Paragraph (`p`), Heading 1 (`h1`), Heading 2 (`h2`), To-do Checkbox (`todo`), Callout (`callout`), Quote (`quote`), Code Block (`code`), Divider (`divider`), Field group (`fields`, including secret fields), Page link (`page`) and Table (`table`).
+* **Pictures (`/picture`, paste or drag and drop):**
+  * Each picture is shrunk to at most 1600 px and saved as WebP inside the page, so it is encrypted and synced like the rest of the page. A 5 MB photo typically becomes tens or hundreds of KB.
+  * Click a picture to see it full size; add a caption below it (captions are searchable).
+  * A page can hold about 2 MB of pictures; put more on sub-pages.
+* **Export / import a page (⋯ in the page toolbar, or right-click in the desktop sidebar):**
+  * **Cherrion page file** (`.cherrion-page`) keeps everything, with or without sub-pages. You can protect it with its own password, which is then asked for on import. Without a password, a warning says the file is readable by anyone.
+  * **Markdown** (`.md`) is readable anywhere. Secret values are masked unless you tick "Include secret values".
+  * **Import** a page file or any Markdown/text file at the top level or under the current page. Imported pages always get new ids, so nothing existing is overwritten.
 * **Tables (`/table`):**
   * A grid with an optional header row.
   * **Tab** / **Shift+Tab** move between cells, **Enter** moves down, and Tab in the last cell adds a row.
@@ -79,7 +87,10 @@ Below is the **complete, structured project documentation** formatted so you can
 * **Account Menu & Status:** The sidebar footer shows your name and the connection status: Local only, Syncing…, Online · synced, Offline, or Sync error. Clicking the name opens a menu with Sync now, Settings, Edit name, Dark/Light mode and Lock vault.
 * **Responsive Layout:** On narrow screens the sidebar slides in from ☰, top-bar buttons become icons, and block actions collapse into a ⋮ menu. All pickers are custom dropdowns that behave the same on every device.
 * **Lock & Auto-lock:** 🔒 locks every open tab. The vault also locks after 1–60 minutes of inactivity (configurable). Locking wipes decrypted content from memory and the page and closes pop-outs.
-* **Template Picker:** ＋ and ↳ Sub-note open a picker: Blank page, **Email account** (address, password, recovery email/phone, 2-Step method, backup codes), **Website login**, **Secure note** and **Meeting / general note**.
+* **Template Picker:** ＋ and ↳ Sub-note open a picker: Blank page, **Email account** (address, password, recovery email/phone, 2-Step method, backup codes), **Website login**, **Proxy**, **Secure note** and **Meeting / general note**.
+* **Proxy pages:** Link, IP address, Port, User, Password and Note. Paste `ip:port:user:password` (also `user:password@ip:port`, with an optional `socks5://` or `http://`) into **Link** and the other four fields fill in. Editing them rebuilds the link, unless you typed your own. Link and Password are secret fields.
+* **Changing a page's category** offers that category's form, listing its fields. It fills a blank page, or goes on top of existing content without removing anything. It isn't offered again if the page already has the form.
+* **Field groups:** + Field, + Secret field, + Secret note (hidden multi-line text) and + 2FA code.
 * **Categories:** Each note has a category, shown as a tree icon and usable as a sidebar filter.
 * **Field Groups & Secret Fields:** Labelled inputs that can be added anywhere with `/` (**Field group**, **Secret field**). Secret values are masked until revealed, excluded from search, masked in stickies and pop-outs, and copied with a 30-second clipboard clear.
 * **Migration:** Notes from the earlier unencrypted version (in this browser, in old JSON backups, or in an old sync room) are encrypted on import, and the plaintext browser copy is removed.
@@ -117,7 +128,8 @@ Below is the **complete, structured project documentation** formatted so you can
 1. Open the site and choose **Create an account**. Start with an empty vault, the vault saved in this browser by an earlier version, or an encrypted backup file. Save the recovery key it shows.
 2. On any other device, **Log in** with the same username and password.
 3. Forgot the password? **Use your recovery key** on the login screen.
-4. Offline: keep the tab open. The status shows **Offline · N unsaved** and the changes are saved when you reconnect (closing the tab first asks for confirmation).
+4. Sessions last 12 hours and are renewed automatically while you work. If that isn't possible (for example, the password was changed on another device), Cherrion asks for your password without logging you out, so nothing is lost.
+5. Offline: keep the tab open. The status shows **Offline · N unsaved** and the changes are saved when you reconnect (closing the tab first asks for confirmation).
 
 ### Step 5: Use Blocks & Sticky Notes
 1. Click inside any block and type `/` to insert headings, to-dos, callouts, quotes, code, dividers, pages, field groups, secret fields or 2FA codes.
@@ -134,14 +146,21 @@ Below is the **complete, structured project documentation** formatted so you can
    - If the server can't be reached, the message names the server and the cause (name lookup, refused connection, timeout, or a proxy/antivirus breaking HTTPS).
 4. **Sync an existing file**: ⚙ Settings → **Online sync** → *Link to my account* (same vault) or *Create an account from this file*. Changes made offline are kept in the file and uploaded when you are back online.
 5. 🔒 locks the file (wipes the key and decrypted notes from memory); it also locks after the auto-lock time.
-6. **Double-click to open:** ⚙ Settings → Vault file → *Open .cherrion files with Cherrion*. After that, double-clicking a `.cherrion` file in File Explorer opens Cherrion with that file ready for its password, like `.ctb` files in CherryTree. It's registered for your Windows user only (no admin rights) and follows `Cherrion.exe` if you move it.
+6. **Right-click menus:**
+   - On a page in the sidebar: Open, New sub-page, New page here, Rename (F2), Duplicate, Pin/Unpin, Expand/Collapse, Move up/down and Delete.
+   - In the page: Cut, Copy, Paste and Select all on text, plus Turn into, Insert below, Duplicate, Move up/down and Delete block.
+   - With a page selected in the sidebar, the **Delete** key asks before deleting it, like the toolbar's Delete button (this also works on the website).
+7. **Closing the window** asks whether to **hide Cherrion in the tray** (🍒 by the clock; double-click it, or its menu: Open / Lock / Exit) or **exit**. Tick "Don't ask again" to remember, or change it in ⚙ Settings → Vault file. Starting Cherrion again (or double-clicking a `.cherrion` file) brings the running window back instead of opening a second one.
+8. **Problems?** The app writes warnings and errors (never note content) to `%APPDATA%\Cherrion\cherrion.log`.
+9. **📖 Documentation** (account menu, or the start screen) explains every feature, with keyboard shortcuts and troubleshooting. It's also on the website's login screen.
+10. **Double-click to open:** ⚙ Settings → Vault file → *Open .cherrion files with Cherrion*. After that, double-clicking a `.cherrion` file in File Explorer opens Cherrion with that file ready for its password, like `.ctb` files in CherryTree. It's registered for your Windows user only (no admin rights) and follows `Cherrion.exe` if you move it.
 
 **Develop it:**
 1. `python -m venv desktop/.venv`, then `desktop\.venv\Scripts\pip install -r desktop/requirements-build.txt`.
 2. `npm run desktop` builds the front end (`dist-desktop/`) and opens the app. For live reload: `npm run dev:desktop` in one terminal and `desktop\.venv\Scripts\python desktop/main.py --dev --debug` in another.
 3. `npm run test:desktop` runs the vault-file and sync-client tests. `npm run desktop:package` builds `desktop/dist/Cherrion.exe`.
 
-**Release it:** `.github/workflows/build-release.yml` tests and builds `Cherrion.exe` on every push and pull request (download it from the run's *Artifacts*). To publish a release, bump `version` in `package.json`, commit, then `git tag v0.2.0 && git push origin v0.2.0`; the workflow attaches `Cherrion.exe` and its SHA-256 to a new GitHub Release.
+**Release it:** `.github/workflows/build-release.yml` tests and builds `Cherrion.exe` on every push and pull request to `master` and `feature/desktop` (download it from the run's *Artifacts*). Every push to **feature/desktop** also replaces the **`desktop-latest` pre-release** on the Releases page with the new build. To publish a release, push a tag such as `git tag v1.0.1 && git push origin v1.0.1` (the tag sets the exe's version; keep `version` in `package.json` in step); the workflow attaches `Cherrion.exe` and its SHA-256 to a new GitHub Release.
 
 ---
 

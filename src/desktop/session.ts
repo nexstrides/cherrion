@@ -4,7 +4,7 @@
 // Everything written to the file is what the web version sends to the server: encrypted envelopes and
 // the key-wrapped header. Notes stay "dirty" in the file until the sync server has stored them, so
 // edits made offline survive restarts and are uploaded later.
-import { ApiError, api, hasSession, setSession, setTransport } from '../api';
+import { ApiError, api, hasSession, setReauthenticator, setSession, setTransport } from '../api';
 import { DEFAULT_KDF_COST, wipe } from '../crypto';
 import { encryptNote, isEnvelope, type Envelope } from '../envelope';
 import type { Note } from '../model';
@@ -243,7 +243,11 @@ export async function createAccount(urlText: string, username: string, password:
   const url = normalizeServerUrl(urlText);
   await store.flush();
   const prepared = store.prepareAccount(password);
-  const notes = store.allEnvelopes();
+  const all = store.allEnvelopes();
+  // A big file (pictures) would not fit in the sign-up request: then sign up empty and let sync
+  // upload the notes in batches.
+  const fits = sync.batchBySize(all, 3_000_000).length <= 1;
+  const notes = fits ? all : [];
   server = url;
   try {
     const session = await api.signup({ username, header: prepared.header, authKey: prepared.authKey, recoveryAuthKey: prepared.recoveryAuthKey, notes });
@@ -255,7 +259,7 @@ export async function createAccount(urlText: string, username: string, password:
     store.setRemoteAccount(true);
     sync.setSince(0);
     save({ meta: { sync_url: url, sync_username: username, sync_since: 0 } });
-    store.confirmSent(notes);
+    if (fits) store.confirmSent(notes); else store.markAllUnsent();
     remote = { kind: 'connected' };
     changed();
     sync.startSync();
@@ -386,6 +390,14 @@ export function wireDesktopSession(): void {
 
   sync.onSince(rev => { if (link && path) save({ meta: { sync_since: rev } }); });
   sync.onSessionExpired(() => { setSession(null); void connect(); });
+  // An expired session (12 hours) is renewed with the kept login key and the request retried.
+  setReauthenticator(async () => {
+    if (!link || !authKey) return false;
+    setSession(null);
+    await connect();
+    return hasSession();
+  });
+  store.onAuthKeyChange(key => { if (link) { wipe(authKey); authKey = key.slice(); } });
   window.addEventListener('online', () => { if (link && !hasSession()) void connect(); });
   setInterval(() => {
     if (store.isUnlocked() && link && authKey && !hasSession() && navigator.onLine) void connect();

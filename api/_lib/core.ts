@@ -34,6 +34,8 @@ export class HttpError extends Error {
 const SESSION_MS = 12 * 60 * 60 * 1000;
 const MAX_NOTES_PER_REQUEST = 5000;
 const PAGE = 2000;
+/** Approximate JSON size of the notes in one sync response (see sync()). */
+export const RESPONSE_BUDGET = 3_000_000;
 const USERNAME = /^[a-z0-9][a-z0-9._-]{2,39}$/;
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -195,7 +197,22 @@ export async function sync(repo: Repo, accountId: string, body: unknown): Promis
   const incoming = envelopes(b.notes);
   if (incoming.length) await repo.putNotes(account.id, incoming);
   const { notes, revs } = await repo.notesSince(account.id, since, PAGE);
-  return { notes, rev: revs.length ? revs[revs.length - 1]! : since, more: notes.length === PAGE, header: current };
+  // Keep each response well under the hosting limit (Vercel: 4.5 MB). Pages with pictures are large,
+  // so stop at about 3 MB (always at least one note) and let the client ask for the rest.
+  let bytes = 0;
+  let count = 0;
+  while (count < notes.length) {
+    bytes += JSON.stringify(notes[count]).length;
+    if (count > 0 && bytes > RESPONSE_BUDGET) break;
+    count++;
+  }
+  const page = notes.slice(0, count);
+  return {
+    notes: page,
+    rev: count ? revs[count - 1]! : since,
+    more: count < notes.length || notes.length === PAGE,
+    header: current,
+  };
 }
 
 export async function logout(repo: Repo, authorization: string | null): Promise<{ ok: true }> {

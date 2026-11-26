@@ -46,6 +46,21 @@ export const ICONS = {
   lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
   key: 'M2.5 21.5l9.6-9.6M16 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM6 18l2 2M9 15l2 2',
   layers: 'M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
+  cut: 'M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12',
+  paste: 'M9 2h6v4H9zM16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2',
+  selectAll: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 12l3 3 5-6',
+  trash: 'M4 7h16M10 3h4a1 1 0 0 1 1 1v3H9V4a1 1 0 0 1 1-1zM6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6',
+  arrowUp: 'M12 19V5M5 12l7-7 7 7',
+  arrowDown: 'M12 5v14M19 12l-7 7-7-7',
+  plus: 'M12 5v14M5 12h14',
+  file: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5',
+  pin: 'M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z',
+  turnInto: 'M4 7V4h16v3M9 20h6M12 4v16',
+  folder: 'M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  table: 'M3 3h18v18H3zM3 9h18M3 15h18M9 3v18',
+  more: 'M5 11.2a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6zM12 11.2a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6zM19 11.2a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6z',
+  power: 'M12 2v10M18.36 6.64a9 9 0 1 1-12.73 0',
+  tray: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
   rowAdd: 'M3 3h18v11H3zM3 8.5h18M9 3v11M15 3v11M12 17v5M9.5 19.5h5',
   colAdd: 'M3 3h11v18H3zM3 9h11M3 15h11M8.5 3v18M19.5 9v6M16.5 12h6',
 } as const;
@@ -98,16 +113,25 @@ export function autoResize(area: HTMLTextAreaElement): void {
   area.style.height = `${area.scrollHeight}px`;
 }
 
-export function download(filename: string, text: string, type = 'application/json'): void {
+/**
+ * Saves text as a file. Resolves to where it was saved (desktop), true (browser download started),
+ * or null when the person cancelled the save dialog. With `quiet`, the caller reports the result.
+ */
+export async function download(filename: string, text: string, type = 'application/json', opts: { quiet?: boolean } = {}): Promise<string | true | null> {
   if (DESKTOP) {
     // The desktop window has no download bar: ask where to save with the system dialog.
-    py('save_text', filename, text)
-      .then(saved => { if (saved) toast(`Saved to ${saved}`); })
-      .catch((err: unknown) => toast(err instanceof Error ? err.message : String(err), 'error', 7000));
-    return;
+    try {
+      const saved = await py('save_text', filename, text);
+      if (saved && !opts.quiet) toast(`Saved to ${saved}`);
+      return saved;
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), 'error', 7000);
+      return null;
+    }
   }
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = el('a', { href: url, download: filename });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
 }

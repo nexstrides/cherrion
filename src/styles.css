@@ -103,6 +103,11 @@ button, input, select, textarea { font: inherit; }
 .dropdown-option.selected { font-weight: 600; }
 .dd-option-label { flex: 1; }
 .dd-check { width: 14px; text-align: right; color: var(--accent); }
+.dd-hint { margin-left: 16px; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.dd-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.dropdown-option.disabled { opacity: 0.45; cursor: default; }
+.dropdown-option.disabled:hover { background: transparent; }
+.dropdown-menu.context { max-height: min(480px, 80vh); }
 .field-label .dropdown { display: flex; margin-top: 5px; }
 .field-label .dropdown-trigger { padding: 8px 10px; font-size: 14px; }
 
@@ -280,6 +285,27 @@ button.crumb:hover { background: var(--bg-hover); color: var(--text); text-decor
 
 .block-body { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px; }
 
+/* Picture block */
+.block-image .block-body { flex-direction: column; align-items: stretch; }
+.image-figure { margin: 4px 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.image-view {
+  display: block; max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border);
+  cursor: zoom-in; background: var(--field-bg);
+}
+.image-caption {
+  width: 100%; border: none; outline: none; background: transparent; padding: 2px 0;
+  color: var(--text-muted); font: inherit; font-size: 13px;
+}
+.image-caption:placeholder-shown { opacity: 0; transition: opacity 0.12s; }
+.block-image:hover .image-caption:placeholder-shown, .image-caption:focus { opacity: 1; }
+.lightbox {
+  position: fixed; inset: 0; z-index: 3000; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 16px; background: rgba(0, 0, 0, 0.86); cursor: zoom-out; outline: none;
+}
+.lightbox-img { max-width: 100%; max-height: calc(100vh - 80px); object-fit: contain; border-radius: 6px; }
+.lightbox-caption { color: #eee; font-size: 14px; text-align: center; }
+.editor-view.drop-target { outline: 2px dashed var(--accent); outline-offset: -10px; border-radius: 12px; }
+
 /* Table block */
 .block-table .block-body { flex-direction: column; align-items: stretch; gap: 6px; }
 .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); }
@@ -439,6 +465,46 @@ button.crumb:hover { background: var(--bg-hover); color: var(--text); text-decor
 .modal-card.modal-small { width: 400px; }
 .confirm-title { margin: 0 0 8px; font-size: 17px; }
 .confirm-message { margin: 0 0 18px; font-size: 14px; line-height: 1.5; color: var(--text-muted); }
+/* Documentation */
+.docs-card { width: 920px; max-width: 100%; max-height: min(86vh, 900px); display: flex; flex-direction: column; padding-bottom: 0; }
+.docs-layout { display: flex; gap: 18px; min-height: 0; flex: 1; }
+.docs-toc { flex: none; width: 210px; overflow-y: auto; padding: 4px 0 16px; display: flex; flex-direction: column; gap: 2px; }
+.docs-link {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 8px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+}
+.docs-link:hover, .docs-link:focus-visible { background: var(--bg-hover); outline: none; }
+.docs-content { flex: 1; min-width: 0; overflow-y: auto; padding: 0 4px 24px 0; font-size: 14px; line-height: 1.6; }
+.docs-section + .docs-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+.docs-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 16px; outline: none; scroll-margin-top: 4px; }
+.docs-section p { margin: 0 0 8px; }
+.docs-section ul { margin: 0 0 8px; padding-left: 20px; }
+.docs-section li { margin-bottom: 5px; }
+.docs-icon { width: 20px; text-align: center; flex: none; }
+.docs-content kbd {
+  display: inline-block; padding: 0 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px;
+  background: var(--code-bg); font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.6; white-space: nowrap;
+}
+.docs-keys { border-collapse: collapse; width: 100%; margin: 4px 0 10px; font-size: 13.5px; }
+.docs-keys th, .docs-keys td { text-align: left; vertical-align: top; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.docs-keys th { width: 38%; font-weight: 400; white-space: nowrap; }
+.docs-entry { margin-top: 14px; }
+@media (max-width: 720px) {
+  .docs-layout { flex-direction: column; }
+  .docs-toc { width: auto; flex-direction: row; flex-wrap: wrap; max-height: 96px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .docs-link { width: auto; }
+  .docs-keys th { white-space: normal; }
+}
+
+/* Fields filled from a pasted proxy link flash briefly. */
+@keyframes autofilled { from { background: color-mix(in srgb, var(--accent) 22%, transparent); } to { background: transparent; } }
+.fg-input.autofilled { animation: autofilled 1.4s ease-out; }
+.confirm-details {
+  list-style: none; margin: -8px 0 18px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--field-bg); display: grid; gap: 4px; max-height: 220px; overflow-y: auto;
+}
+.confirm-details li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.confirm-details .cd-icon { width: 20px; text-align: center; flex: none; }
 .modal-actions.end { justify-content: flex-end; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .modal-header h3 { margin: 0; }

@@ -1,6 +1,6 @@
 // Login screen and session lifecycle for the online (Vercel + Postgres) version:
 // log in / create account / reset with recovery key, log out, auto-lock.
-import { api, setSession } from '../api';
+import { api, ApiError, setReauthenticator, setSession } from '../api';
 import { DEFAULT_KDF_COST, wipe } from '../crypto';
 import { deleteLocalVault, readLocalVault, type LocalVault } from '../db';
 import type { Envelope } from '../envelope';
@@ -155,6 +155,95 @@ export function enterApp(): void {
   void sync.syncNow();
 }
 
+// ---- Renewing an expired session (sessions last 12 hours) ----
+
+/** The account and its one-way login key, kept while logged in so an expired session can be renewed
+ *  without asking (the vault key, a far stronger secret, is in memory anyway). Wiped on log out. */
+let loginAccount: string | null = null;
+let loginKey: Uint8Array | null = null;
+
+function keepLogin(account: string, key: Uint8Array): void {
+  forgetLogin();
+  loginAccount = account;
+  loginKey = key.slice();
+}
+
+function forgetLogin(): void {
+  wipe(loginKey);
+  loginKey = null;
+  loginAccount = null;
+}
+
+/** Called by the API client when a request finds the session expired. */
+async function renewSession(): Promise<boolean> {
+  if (!store.isUnlocked() || !loginAccount) return false;
+  if (loginKey) {
+    try {
+      const session = await api.login(loginAccount, loginKey);
+      setSession(session.token);
+      store.adoptHeader(session.header);
+      return true;
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 401) return false; // offline: try again later
+      wipe(loginKey); // the password was changed elsewhere
+      loginKey = null;
+    }
+  }
+  return askToLogInAgain();
+}
+
+let relogin: ((ok: boolean) => void) | null = null;
+
+/** Asks for the password without logging out, so nothing in memory (unsaved edits included) is lost. */
+function askToLogInAgain(): Promise<boolean> {
+  const unsaved = store.unsavedCount();
+  $('relogin-account').textContent = loginAccount ?? '';
+  $input('relogin-username').value = loginAccount ?? '';
+  $input('relogin-password').value = '';
+  $('relogin-unsaved').textContent = unsaved
+    ? `${unsaved} change${unsaved === 1 ? '' : 's'} not saved yet will be saved once you log in. Logging out discards ${unsaved === 1 ? 'it' : 'them'}.`
+    : 'Everything is saved.';
+  $('relogin-modal').querySelector('.form-error')?.classList.add('hidden');
+  $('relogin-modal').classList.remove('hidden');
+  requestAnimationFrame(() => $input('relogin-password').focus());
+  return new Promise(resolve => { relogin = resolve; });
+}
+
+function finishRelogin(ok: boolean): void {
+  $('relogin-modal').classList.add('hidden');
+  $input('relogin-password').value = '';
+  const resolve = relogin;
+  relogin = null;
+  resolve?.(ok);
+}
+
+function wireReloginDialog(): void {
+  $('relogin-logout').onclick = () => finishRelogin(false);
+  onSubmit('relogin-form', form => {
+    const account = loginAccount;
+    const password = $input('relogin-password').value;
+    if (!account) { finishRelogin(false); return; }
+    if (!password) { setError(form, 'Enter your password.'); return; }
+    void busy(form, async () => {
+      const kdf = await api.prelogin(account);
+      const kek = deriveKek(password, kdf);
+      const key = authKeyFromKek(kek);
+      try {
+        const session = await api.login(account, key);
+        // The account's header carries the new password slot; it must belong to this vault.
+        if (!store.adoptAccountHeader(session.header)) throw new Error('This account now holds a different vault. Log out and log in again.');
+        setSession(session.token);
+        keepLogin(account, key);
+      } finally {
+        wipe(kek);
+        wipe(key);
+      }
+      finishRelogin(true);
+      toast('Logged in again. Your changes are being saved.');
+    });
+  });
+}
+
 let locking = false;
 
 /** Logs out: saves what it can, wipes the key and decrypted notes, ends the server session. */
@@ -171,6 +260,8 @@ export async function lockApp(opts: { broadcast?: boolean; reason?: string; skip
     }
     const lost = store.unsavedCount();
     await store.lock();
+    forgetLogin();
+    if (relogin) finishRelogin(false);
     sync.stopSync();
     await api.logout();
     setSession(null);
@@ -281,7 +372,12 @@ export function wireLockScreen(): void {
       try {
         const authKey = authKeyFromKek(kek);
         let session: { token: string; header: VaultHeader };
-        try { session = await api.login(account, authKey); } finally { wipe(authKey); }
+        try {
+          session = await api.login(account, authKey);
+          keepLogin(account, authKey);
+        } finally {
+          wipe(authKey);
+        }
         const vaultKey = unlockWithKek(session.header, kek);
         await startSession(account, session.token, session.header, vaultKey);
       } finally {
@@ -331,6 +427,7 @@ export function wireLockScreen(): void {
       let session: { token: string; header: VaultHeader };
       try {
         session = await api.signup({ username: account, header, authKey, recoveryAuthKey: recoveryAuth, notes });
+        keepLogin(account, authKey);
       } finally {
         wipe(authKey); wipe(recoveryAuth);
       }
@@ -363,6 +460,7 @@ export function wireLockScreen(): void {
         const next = rewrapPasswordWithAuth(header, vaultKey, password);
         try {
           const session = await api.recoverFinish(account, rAuth, next.header, next.authKey);
+          keepLogin(account, next.authKey);
           await startSession(account, session.token, next.header, vaultKey);
         } finally {
           wipe(next.authKey);
@@ -378,7 +476,11 @@ export function wireLockScreen(): void {
   $('btn-lock').onclick = () => void confirmLogout();
   shell.lock = () => void confirmLogout();
   store.onLockRequest(() => void lockApp());
+  // Only reached when the session could not be renewed and the person chose to log out.
   sync.onSessionExpired(message => void lockApp({ skipSave: true, reason: message }));
+  setReauthenticator(renewSession);
+  store.onAuthKeyChange(key => { if (loginAccount) keepLogin(loginAccount, key); });
+  wireReloginDialog();
 
   for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const) {
     window.addEventListener(type, markActivity, { capture: true, passive: true });

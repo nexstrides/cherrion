@@ -47,6 +47,10 @@ export interface Journal {
 let journal: Journal | null = null;
 export const setJournal = (j: Journal | null): void => { journal = j; };
 
+const authKeyListeners = new Set<(key: Uint8Array) => void>();
+/** The account's login key changed (password changed here); listeners copy it, it is wiped after. */
+export const onAuthKeyChange = (fn: (key: Uint8Array) => void) => authKeyListeners.add(fn);
+
 /** False for a desktop vault file that is not linked to an online account (password changes stay local). */
 let remoteAccount = true;
 export const setRemoteAccount = (linked: boolean): void => { remoteAccount = linked; };
@@ -340,6 +344,8 @@ export async function changePassword(current: string, next: string): Promise<voi
     replaceHeader(remoteAccount
       ? await api.updateAccount({ currentAuthKey: currentKey, header: rewrapped.header, authKey: rewrapped.authKey })
       : rewrapped.header);
+    // Whoever keeps the login key to renew sessions must switch to the new one (they copy it).
+    if (remoteAccount) authKeyListeners.forEach(fn => fn(rewrapped.authKey));
   } finally {
     wipe(currentKey); wipe(rewrapped.authKey);
   }

@@ -36,6 +36,24 @@ function advance(rev: number): void {
   sinceListeners.forEach(fn => fn(rev));
 }
 
+/** Approximate JSON size of the notes in one push (Vercel accepts request bodies up to 4.5 MB). */
+const PUSH_BUDGET = 3_000_000;
+
+/** Splits envelopes into batches of about `budget` bytes of JSON (a bigger single note goes alone). */
+export function batchBySize(list: Envelope[], budget: number): Envelope[][] {
+  const batches: Envelope[][] = [];
+  let current: Envelope[] = [];
+  let size = 0;
+  for (const env of list) {
+    const n = JSON.stringify(env).length;
+    if (current.length && size + n > budget) { batches.push(current); current = []; size = 0; }
+    current.push(env);
+    size += n;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
 /** A newer local header (e.g. a name changed while offline) is pushed once per version. */
 let headerPushedFor = 0;
 
@@ -61,9 +79,16 @@ async function syncOnce(): Promise<void> {
   const dirtyHeader = store.takeDirtyHeader();
   try {
     await store.flush();
-    const sent = store.outgoing();
-    let res = await api.sync({ since: Math.max(0, since - OVERLAP), notes: sent, ...(dirtyHeader ? { header: dirtyHeader } : {}) });
-    store.confirmSent(sent);
+    // Large pages (pictures) are sent in several requests, each under the hosting limit. The early
+    // ones only push (a `since` beyond any revision pulls nothing); the last one also pulls.
+    const batches = batchBySize(store.outgoing(), PUSH_BUDGET);
+    const last = batches.pop() ?? [];
+    for (const batch of batches) {
+      await api.sync({ since: Number.MAX_SAFE_INTEGER, notes: batch });
+      store.confirmSent(batch);
+    }
+    let res = await api.sync({ since: Math.max(0, since - OVERLAP), notes: last, ...(dirtyHeader ? { header: dirtyHeader } : {}) });
+    store.confirmSent(last);
     let unreadable = 0;
     for (;;) {
       unreadable += store.applyEnvelopes(res.notes).failed;

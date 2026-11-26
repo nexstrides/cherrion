@@ -6,10 +6,13 @@ remembered. Only static files are served: notes and keys never pass through this
 from __future__ import annotations
 
 import functools
+import hmac
 import http.server
+import json
 import socket
 import threading
 from pathlib import Path
+from typing import Callable
 
 PORTS = range(47219, 47229)
 
@@ -34,6 +37,27 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
 
+    def do_POST(self) -> None:  # noqa: N802
+        """POST /__cherrion/activate from a second start of the app (see instance.py): show this
+        window. Needs the random token from instance.json, which only this user's processes can read."""
+        server = self.server
+        token = getattr(server, 'activate_token', None)
+        handler = getattr(server, 'on_activate', None)
+        if (self.path != '/__cherrion/activate' or not token or not handler
+                or self.headers.get('Host', '') not in getattr(server, 'allowed_hosts', ())
+                or not hmac.compare_digest(self.headers.get('X-Cherrion-Token', ''), token)):
+            self.send_error(403)
+            return
+        length = min(int(self.headers.get('Content-Length') or 0), 64 * 1024)
+        try:
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except ValueError:
+            body = {}
+        file = body.get('file') if isinstance(body, dict) and isinstance(body.get('file'), str) else None
+        threading.Thread(target=handler, args=(file,), daemon=True).start()
+        self.send_response(204)
+        self.end_headers()
+
     def end_headers(self) -> None:
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -56,8 +80,9 @@ class _ExclusiveServer(http.server.ThreadingHTTPServer):
         super().server_bind()
 
 
-def serve(root: Path) -> str:
-    """Starts the server in a background thread and returns its URL."""
+def serve(root: Path, on_activate: Callable[[str | None], None] | None = None, activate_token: str | None = None) -> str:
+    """Starts the server in a background thread and returns its URL. With `on_activate`, a second
+    start of the app can bring this one back (POST /__cherrion/activate with `activate_token`)."""
     last_error: OSError | None = None
     for port in PORTS:
         handler = functools.partial(_Handler, directory=str(root))
@@ -67,6 +92,8 @@ def serve(root: Path) -> str:
             last_error = err
             continue
         httpd.allowed_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}  # type: ignore[attr-defined]
+        httpd.on_activate = on_activate  # type: ignore[attr-defined]
+        httpd.activate_token = activate_token  # type: ignore[attr-defined]
         threading.Thread(target=httpd.serve_forever, name='cherrion-static', daemon=True).start()
         return f'http://127.0.0.1:{port}/'
     raise OSError(f'No free port for the Cherrion window ({last_error}).')

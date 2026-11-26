@@ -40,8 +40,28 @@ let transport: Transport = fetchTransport;
 /** The desktop build sends requests through Python to the vault file's sync server. */
 export const setTransport = (t: Transport): void => { transport = t; };
 
+/**
+ * Renews an expired session (sessions last 12 hours): resolves true when a new token is set. The web
+ * app logs back in with the kept login key, or asks for the password; the desktop app reconnects.
+ */
+let reauthenticate: (() => Promise<boolean>) | null = null;
+export const setReauthenticator = (fn: (() => Promise<boolean>) | null): void => { reauthenticate = fn; };
+let renewing: Promise<boolean> | null = null;
+/** One renewal at a time: requests that fail together wait for the same one. */
+function renewSession(): Promise<boolean> {
+  renewing ??= (async () => {
+    try { return reauthenticate ? await reauthenticate() : false; } catch { return false; } finally { renewing = null; }
+  })();
+  return renewing;
+}
+
 async function post(path: string, body: unknown, auth = false): Promise<Record<string, unknown>> {
-  const { status, data } = await transport(path, JSON.stringify(body), auth ? token : null);
+  const text = JSON.stringify(body);
+  let { status, data } = await transport(path, text, auth ? token : null);
+  // Session expired: renew it quietly and try once more, so nothing waiting to be saved is lost.
+  if (status === 401 && auth && path !== 'logout' && (await renewSession())) {
+    ({ status, data } = await transport(path, text, token));
+  }
   const message = typeof data.error === 'string' ? data.error : null;
   if (status === 0) throw new ApiError(message ?? 'Cannot reach the Cherrion server. Check your internet connection.', 0);
   if (status < 200 || status >= 300) throw new ApiError(message ?? `Server error (${status}).`, status);

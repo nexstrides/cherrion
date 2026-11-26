@@ -2,8 +2,15 @@
 // keyboard-navigable listbox popover that is positioned inside the viewport.
 import { el, ICONS, svgIcon, type IconName } from './dom';
 
-/** `icon` is an emoji; `svg` is a stroke icon from ICONS (sharper, and follows the text colour). */
-export interface DropdownOption { value: string; label: string; icon?: string; svg?: IconName; swatch?: string; danger?: boolean }
+/**
+ * `icon` is an emoji; `svg` is a stroke icon from ICONS (sharper, and follows the text colour).
+ * Menus also take `separator` (a divider line), `disabled` and `hint` (a shortcut shown on the right).
+ */
+export interface DropdownOption {
+  value: string; label: string; icon?: string; svg?: IconName; swatch?: string; danger?: boolean;
+  separator?: boolean; disabled?: boolean; hint?: string;
+}
+export const SEPARATOR: DropdownOption = { value: '', label: '', separator: true };
 export interface Dropdown { readonly el: HTMLElement; readonly value: string; setValue(value: string): void }
 
 interface DropdownConfig {
@@ -15,7 +22,8 @@ interface DropdownConfig {
   onChange: (value: string) => void;
 }
 
-let current: { trigger: HTMLButtonElement; close: (refocus: boolean) => void } | null = null;
+/** The open menu. `trigger` is the button it belongs to, or null for a right-click menu. */
+let current: { trigger: HTMLElement | null; close: (refocus: boolean) => void } | null = null;
 
 function menu(): HTMLElement {
   let m = document.getElementById('dropdown-menu');
@@ -32,7 +40,7 @@ export function closeDropdowns(): void { current?.close(false); }
 document.addEventListener('pointerdown', e => {
   if (!current) return;
   const t = e.target as Node;
-  if (!menu().contains(t) && !current.trigger.contains(t)) current.close(false);
+  if (!menu().contains(t) && !current.trigger?.contains(t)) current.close(false);
 }, true);
 window.addEventListener('resize', () => current?.close(false));
 document.addEventListener('scroll', e => { if (current && !menu().contains(e.target as Node)) current.close(false); }, true);
@@ -56,51 +64,96 @@ function caret(): SVGSVGElement {
 /** Opens the shared popover under `trigger`. `selected` is null for action menus. */
 function openPopover(trigger: HTMLButtonElement, ariaLabel: string, options: DropdownOption[], selected: string | null, onChoose: (value: string) => void): void {
   if (current?.trigger === trigger) { current.close(true); return; }
+  present({ trigger, anchor: trigger.getBoundingClientRect(), returnFocus: trigger, ariaLabel, options, selected, onChoose });
+}
+
+/**
+ * Opens a menu at the mouse pointer (right-click). Focus goes back to whatever had it before, so
+ * Paste lands in the text field that was right-clicked.
+ */
+export function openContextMenu(x: number, y: number, ariaLabel: string, options: DropdownOption[], onChoose: (value: string) => void): void {
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  present({ trigger: null, anchor: { left: x, top: y, right: x, bottom: y, width: 0 }, atPoint: true, returnFocus, ariaLabel, options, selected: null, onChoose });
+}
+
+interface PresentOptions {
+  trigger: HTMLElement | null;
+  anchor: { left: number; top: number; right: number; bottom: number; width: number };
+  atPoint?: boolean;
+  returnFocus: HTMLElement | null;
+  ariaLabel: string;
+  options: DropdownOption[];
+  selected: string | null;
+  onChoose: (value: string) => void;
+}
+
+function present(o: PresentOptions): void {
   current?.close(false);
   const m = menu();
+  const { trigger } = o;
 
   const close = (refocus: boolean) => {
     m.classList.add('hidden');
     m.replaceChildren();
     m.onkeydown = null;
-    trigger.setAttribute('aria-expanded', 'false');
-    if (current?.trigger === trigger) current = null;
-    if (refocus && trigger.isConnected) trigger.focus();
+    trigger?.setAttribute('aria-expanded', 'false');
+    if (current?.close === close) current = null;
+    if (refocus && o.returnFocus?.isConnected) o.returnFocus.focus({ preventScroll: true });
   };
-  const choose = (v: string) => { close(true); onChoose(v); };
+  const choose = (v: string) => { close(true); o.onChoose(v); };
 
-  const items = options.map(opt => {
-    const isSelected = opt.value === selected;
+  const items: HTMLElement[] = [];
+  const rows = o.options.map(opt => {
+    if (opt.separator) {
+      const sep = el('div', { className: 'dd-sep' });
+      sep.setAttribute('role', 'separator');
+      return sep;
+    }
+    const isSelected = opt.value === o.selected;
     const v = optionVisual(opt);
-    const item = el('div', { className: `dropdown-option${isSelected ? ' selected' : ''}${opt.danger ? ' danger' : ''}`, tabIndex: -1 },
+    const cls = `dropdown-option${isSelected ? ' selected' : ''}${opt.danger ? ' danger' : ''}${opt.disabled ? ' disabled' : ''}`;
+    const item = el('div', { className: cls, tabIndex: -1 },
       ...(v ? [v] : []), el('span', { className: 'dd-option-label', text: opt.label }),
-      el('span', { className: 'dd-check', text: isSelected ? '✓' : '' }));
+      opt.hint ? el('span', { className: 'dd-hint', text: opt.hint }) : el('span', { className: 'dd-check', text: isSelected ? '✓' : '' }));
     item.dataset.value = opt.value;
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', String(isSelected));
-    item.onclick = () => choose(opt.value);
+    if (opt.disabled) item.setAttribute('aria-disabled', 'true');
+    else {
+      item.onclick = () => choose(opt.value);
+      items.push(item);
+    }
     return item;
   });
-  m.replaceChildren(...items);
-  m.setAttribute('aria-label', ariaLabel);
+  m.replaceChildren(...rows);
+  m.setAttribute('aria-label', o.ariaLabel);
+  m.classList.toggle('context', !!o.atPoint);
   m.classList.remove('hidden');
 
-  // Position below the trigger (above if there is no room), inside the viewport.
-  const r = trigger.getBoundingClientRect();
-  m.style.minWidth = `${Math.max(r.width, 160)}px`;
+  // Below the anchor (above if there is no room), inside the viewport. A right-click menu opens at
+  // the pointer and flips left/up near the edges, like a desktop menu.
+  const r = o.anchor;
+  m.style.minWidth = `${Math.max(r.width, o.atPoint ? 200 : 160)}px`;
   m.style.left = '0px';
   m.style.top = '0px';
   const mh = m.offsetHeight;
   const mw = m.offsetWidth;
-  const below = window.innerHeight - r.bottom;
-  let top = below >= mh + 8 || below >= r.top ? r.bottom + 4 : r.top - mh - 4;
-  top = Math.max(8, Math.min(top, window.innerHeight - mh - 8));
-  m.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mw - 8))}px`;
-  m.style.top = `${top}px`;
+  let top: number;
+  let left: number;
+  if (o.atPoint) {
+    top = r.top + mh + 8 <= window.innerHeight ? r.top : r.top - mh;
+    left = r.left + mw + 8 <= window.innerWidth ? r.left : r.left - mw;
+  } else {
+    const below = window.innerHeight - r.bottom;
+    top = below >= mh + 8 || below >= r.top ? r.bottom + 4 : r.top - mh - 4;
+    left = r.left;
+  }
+  m.style.top = `${Math.max(8, Math.min(top, window.innerHeight - mh - 8))}px`;
+  m.style.left = `${Math.max(8, Math.min(left, window.innerWidth - mw - 8))}px`;
 
-  trigger.setAttribute('aria-expanded', 'true');
+  trigger?.setAttribute('aria-expanded', 'true');
   current = { trigger, close };
-  (items.find(i => i.dataset.value === selected) ?? items[0])?.focus();
+  (items.find(i => i.dataset.value === o.selected) ?? items[0])?.focus();
 
   m.onkeydown = e => {
     const i = items.indexOf(document.activeElement as HTMLDivElement);

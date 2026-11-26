@@ -21,8 +21,8 @@ ICON = HERE / 'assets' / 'cherrion.ico'
 def main() -> None:
     if not (WEB / 'index.html').is_file():
         sys.exit('dist-desktop/ is missing: run `npm run build:desktop` first.')
-    # One version for web and desktop: package.json's.
-    version = json.loads((ROOT / 'package.json').read_text('utf-8'))['version']
+    # The release tag's version when CI builds a tag (CHERRION_VERSION), otherwise package.json's.
+    version = os.environ.get('CHERRION_VERSION') or json.loads((ROOT / 'package.json').read_text('utf-8'))['version']
     (HERE / 'cherrion_desktop' / '_version.py').write_text(f"__version__ = '{version}'\n", 'utf-8')
     PyInstaller.__main__.run([
         str(HERE / 'main.py'),
