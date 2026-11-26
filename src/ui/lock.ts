@@ -1,28 +1,36 @@
-// Lock screen and session lifecycle: create / unlock / recover / join, manual lock, auto-lock.
-import { DEFAULT_KDF_COST } from '../crypto';
-import * as db from '../db';
+// Login screen and session lifecycle for the online (Vercel + Postgres) version:
+// log in / create account / reset with recovery key, log out, auto-lock.
+import { api, setSession } from '../api';
+import { DEFAULT_KDF_COST, wipe } from '../crypto';
+import { deleteLocalVault, readLocalVault, type LocalVault } from '../db';
+import type { Envelope } from '../envelope';
 import { clearLegacyLocalNotes, readLegacyLocalNotes, stampForMigration } from '../legacy';
 import { now, textBlock, uid, type Note } from '../model';
 import { saveSettings, settings } from '../settings';
 import * as store from '../store';
 import * as sync from '../sync';
 import {
-  createVault, normalizeUserName, passwordProblem, rewrapPassword, unlockWithPassword, unlockWithRecoveryKey,
-  type VaultHeader,
+  authKeyFromKek, createVault, deriveKek, passwordProblem, readProfile, recoveryAuthKey, rewrapPasswordWithAuth,
+  rotateRecoveryKey, setProfile, unlockWithKek, unlockWithRecoveryKey, WrongSecretError, type VaultHeader,
 } from '../vault';
 import { clearAppDom, rememberUserName, renderAll } from './app';
+import { confirmDialog } from './dialog';
 import { $, $input, download, nextPaint, toast } from './dom';
 import { clearClipboardNow } from './editor';
 import { idleFor, markActivity, selectNote, shell, ui } from './state';
 import { closeAllPopouts } from './stickies';
 
-type Panel = 'setup' | 'recovery' | 'unlock' | 'recover' | 'join' | 'fatal';
-const PANELS: Panel[] = ['setup', 'recovery', 'unlock', 'recover', 'join', 'fatal'];
+type Panel = 'login' | 'signup' | 'recovery' | 'recover' | 'fatal';
+const PANELS: Panel[] = ['login', 'signup', 'recovery', 'recover', 'fatal'];
+const USERNAME = /^[a-z0-9][a-z0-9._-]{2,39}$/;
 
 function showPanel(panel: Panel): void {
   for (const p of PANELS) $(`panel-${p}`).classList.toggle('hidden', p !== panel);
   for (const e of document.querySelectorAll('#lock-screen .form-error')) e.classList.add('hidden');
-  requestAnimationFrame(() => $(`panel-${panel}`).querySelector<HTMLElement>('input:not([type=checkbox]), button')?.focus());
+  requestAnimationFrame(() => {
+    const inputs = [...$(`panel-${panel}`).querySelectorAll<HTMLInputElement>('input:not([type=checkbox]):not([type=radio]):not([type=file])')];
+    (inputs.find(i => !i.value) ?? inputs[0] ?? $(`panel-${panel}`).querySelector<HTMLElement>('button'))?.focus();
+  });
 }
 
 function setError(form: HTMLElement, message: string): void {
@@ -32,7 +40,7 @@ function setError(form: HTMLElement, message: string): void {
   e.classList.remove('hidden');
 }
 
-/** Disables the form and shows "Working…" while Argon2id runs, then surfaces any error in the form. */
+/** Disables the form and shows "Working…" while Argon2id and the server run, then shows any error. */
 async function busy(form: HTMLFormElement, work: () => Promise<void>): Promise<void> {
   const buttons = [...form.querySelectorAll('button')];
   const submit = form.querySelector<HTMLButtonElement>('button[type=submit]');
@@ -58,22 +66,26 @@ function checkNewPassword(form: HTMLFormElement, password: string, confirm: stri
   return true;
 }
 
+function username(form: HTMLFormElement, inputId: string): string | null {
+  const u = $input(inputId).value.trim().toLowerCase();
+  if (USERNAME.test(u)) return u;
+  setError(form, 'Usernames are 3–40 characters: letters, digits, dot, dash or underscore.');
+  return null;
+}
+
+// ---- Screens ----
+
+/** Whether the server's database survives restarts (false for the local in-memory dev store). */
+let persistentServer = true;
+
 export async function showLockScreen(): Promise<void> {
   $('app').classList.add('hidden');
   $('lock-screen').classList.remove('hidden');
-  if (await db.getHeader()) {
-    $('unlock-title').textContent = settings.userName ? `Welcome back, ${settings.userName}` : 'Unlock your vault';
-    $input('unlock-username').value = settings.userName;
-    showPanel('unlock');
-    return;
-  }
-  const legacy = readLegacyLocalNotes().filter(n => !n.deleted).length;
-  const note = $('setup-legacy-note');
-  note.textContent = legacy
-    ? `${legacy} existing note(s) in this browser will be encrypted into the new vault, and the unencrypted copy will be removed.`
-    : '';
-  note.classList.toggle('hidden', !legacy);
-  showPanel('setup');
+  persistentServer = await api.persistent();
+  $('dev-db-warning').classList.toggle('hidden', persistentServer);
+  $('login-title').textContent = settings.userName ? `Welcome back, ${settings.userName}` : 'Log in';
+  $input('login-username').value = settings.accountName;
+  showPanel('login');
 }
 
 export function showFatal(err: unknown): void {
@@ -84,9 +96,52 @@ export function showFatal(err: unknown): void {
   showPanel('fatal');
 }
 
+let localVault: LocalVault | null = null;
+
+async function showSignup(): Promise<void> {
+  localVault = await readLocalVault();
+  const pages = localVault?.notes.filter(n => !n.deleted).length ?? 0;
+  $('source-local').classList.toggle('hidden', !localVault);
+  $('source-local-text').textContent = `The vault saved in this browser (${pages} page${pages === 1 ? '' : 's'})`;
+  const legacy = readLegacyLocalNotes().filter(n => !n.deleted).length;
+  $('signup-legacy-note').textContent = legacy
+    ? `${legacy} older unencrypted note(s) in this browser will be encrypted into your account, and the unencrypted copy removed.`
+    : '';
+  $('signup-legacy-note').classList.toggle('hidden', !legacy);
+  if (localVault) ($('signup-source').querySelector('input[value=local]') as HTMLInputElement).checked = true;
+  updateSignupSource();
+  showPanel('signup');
+}
+
+const signupSource = (): 'new' | 'local' | 'file' =>
+  (($('signup-source').querySelector('input:checked') as HTMLInputElement | null)?.value ?? 'new') as 'new' | 'local' | 'file';
+
+function updateSignupSource(): void {
+  const source = signupSource();
+  $('signup-file-wrap').classList.toggle('hidden', source !== 'file');
+  $('signup-confirm-wrap').classList.toggle('hidden', source !== 'new');
+  $('signup-password-label').textContent = source === 'new' ? 'Password' : 'Password of that vault';
+  $('signup-source-hint').textContent = source === 'new'
+    ? ''
+    : 'Your account uses this vault’s password. A new recovery key is created, and the old one stops working.';
+}
+
+// ---- Session ----
+
+/** Loads the account's notes and opens the app. */
+async function startSession(account: string, token: string, header: VaultHeader, vaultKey: Uint8Array, initial?: Envelope[]): Promise<void> {
+  setSession(token);
+  settings.accountName = account;
+  saveSettings();
+  const notes = initial ?? (await sync.loadAll()).notes;
+  store.unlock(header, vaultKey, notes);
+  sync.startSync();
+}
+
 function enterApp(): void {
   for (const input of document.querySelectorAll<HTMLInputElement>('#lock-screen input')) {
-    if (input.type === 'checkbox') input.checked = false; else input.value = '';
+    if (input.type === 'checkbox' || input.type === 'radio') input.checked = input.defaultChecked;
+    else input.value = '';
   }
   $('recovery-key-text').textContent = '';
   $('lock-screen').classList.add('hidden');
@@ -98,18 +153,49 @@ function enterApp(): void {
   renderAll();
   const unreadable = store.undecryptableCount();
   if (unreadable) toast(`${unreadable} saved note(s) could not be decrypted and are hidden.`, 'error', 8000);
-  if (settings.syncUrl) void sync.syncNow();
+  void sync.syncNow();
 }
 
-export async function lockApp(broadcast: boolean): Promise<void> {
-  if (!store.isUnlocked()) return;
-  if (broadcast) store.broadcastLock();
-  closeAllPopouts();
-  clearClipboardNow();
-  await store.lock();
-  sync.resetSyncState();
-  clearAppDom();
-  await showLockScreen();
+let locking = false;
+
+/** Logs out: saves what it can, wipes the key and decrypted notes, ends the server session. */
+export async function lockApp(opts: { broadcast?: boolean; reason?: string; skipSave?: boolean } = {}): Promise<void> {
+  if (!store.isUnlocked() || locking) return;
+  locking = true;
+  try {
+    if (opts.broadcast) store.broadcastLock();
+    closeAllPopouts();
+    clearClipboardNow();
+    if (!opts.skipSave) {
+      await store.flush();
+      if (store.unsavedCount()) await sync.syncNow();
+    }
+    const lost = store.unsavedCount();
+    await store.lock();
+    sync.stopSync();
+    await api.logout();
+    setSession(null);
+    clearAppDom();
+    await showLockScreen();
+    if (opts.reason) toast(opts.reason, 'info', 6000);
+    if (lost) toast(`${lost} change(s) could not be saved because the server was unreachable.`, 'error', 9000);
+  } finally {
+    locking = false;
+  }
+}
+
+
+/** Asks first when there are changes the server has not received yet. */
+async function confirmLogout(): Promise<void> {
+  await store.flush();
+  if (store.unsavedCount()) await sync.syncNow();
+  const unsaved = store.unsavedCount();
+  if (unsaved && !(await confirmDialog({
+    title: 'Log out with unsaved changes?',
+    message: `${unsaved} change(s) have not reached the server yet (you seem to be offline). Logging out now discards them.`,
+    confirmLabel: 'Log out anyway',
+  }))) return;
+  await lockApp({ broadcast: true });
 }
 
 function welcomeNotes(): Note[] {
@@ -118,34 +204,20 @@ function welcomeNotes(): Note[] {
     isSticky: true, stickyColor: 'yellow', updatedAt: now(), deleted: false,
     blocks: [
       textBlock('h2', 'Encrypted notes, templates and sticky notes'),
-      textBlock('callout', 'Everything in this vault is encrypted with your vault password before it is saved or synced. Press ＋ to start a page from a template: Email account, Website login, Secure note or Meeting.'),
+      textBlock('callout', 'Everything in your account is encrypted in this browser with your password before it is saved online. Press ＋ to start a page from a template: Email account, Website login, Secure note or Meeting.'),
       textBlock('todo', 'Create an Email account page from the ＋ template picker'),
-      textBlock('todo', 'Type "/" in an empty block for headings, to-dos, field groups and secret fields'),
+      textBlock('todo', 'Type "/" in an empty block for headings, to-dos, field groups, secret fields and 2FA codes'),
       textBlock('todo', 'Keep your recovery key somewhere safe (⚙ Settings can make a new one)'),
     ],
   }];
 }
 
-/** Encrypts notes left by the pre-encryption version, then deletes the plaintext copy. */
-async function migrateLocalLegacy(): Promise<void> {
+/** Encrypts notes left by the pre-encryption version into the account, then deletes the plaintext copy. */
+async function migrateLegacyPlaintext(): Promise<void> {
   const legacy = readLegacyLocalNotes();
   if (!legacy.length) return;
   await store.importPlainNotes(stampForMigration(legacy));
-  await store.flush();
   clearLegacyLocalNotes();
-}
-
-async function friendlyFetch<T>(url: string, work: () => Promise<T>): Promise<T> {
-  try {
-    return await work();
-  } catch (err) {
-    if (err instanceof TypeError) throw new Error(`Could not reach the sync server at ${url}. Is it running (npm run sync-server)?`);
-    throw err;
-  }
-}
-
-function validUrl(text: string): boolean {
-  try { return ['http:', 'https:'].includes(new URL(text).protocol); } catch { return false; }
 }
 
 function onSubmit(id: string, handler: (form: HTMLFormElement) => void): void {
@@ -153,26 +225,102 @@ function onSubmit(id: string, handler: (form: HTMLFormElement) => void): void {
   form.addEventListener('submit', e => { e.preventDefault(); handler(form); });
 }
 
-export function wireLockScreen(): void {
-  $('link-join').onclick = () => showPanel('join');
-  $('link-setup').onclick = () => showPanel('setup');
-  $('link-recover').onclick = () => showPanel('recover');
-  $('link-unlock').onclick = () => showPanel('unlock');
+async function readBackupFile(): Promise<LocalVault> {
+  const file = $input('signup-file').files?.[0];
+  if (!file) throw new Error('Choose the backup file first.');
+  let data: unknown;
+  try { data = JSON.parse(await file.text()); } catch { throw new Error('That file is not a Cherrion backup.'); }
+  if (!store.isBackup(data)) throw new Error('That is not an encrypted Cherrion backup file.');
+  return { header: data.header, notes: data.notes };
+}
 
-  onSubmit('panel-setup', form => {
-    const userName = normalizeUserName($input('setup-username').value);
-    const password = $input('setup-password').value;
-    if (!userName) { setError(form, 'Enter a user name.'); return; }
-    if (!checkNewPassword(form, password, $input('setup-confirm').value)) return;
+const friendly = (err: unknown): never => {
+  if (err instanceof WrongSecretError) throw new Error(err.message === 'Wrong password.' ? 'Wrong password for that vault.' : err.message);
+  throw err;
+};
+
+export function wireLockScreen(): void {
+  $('link-signup').onclick = () => void showSignup();
+  $('link-login').onclick = () => showPanel('login');
+  $('link-recover').onclick = () => {
+    $input('recover-username').value = $input('login-username').value;
+    showPanel('recover');
+  };
+  $('link-login-from-recover').onclick = () => showPanel('login');
+  $('signup-source').addEventListener('change', updateSignupSource);
+
+  onSubmit('panel-login', form => {
+    const account = username(form, 'login-username');
+    const password = $input('login-password').value;
+    if (!account) return;
+    if (!password) { setError(form, 'Enter your password.'); return; }
     void busy(form, async () => {
-      const { header, vaultKey, recoveryKey } = createVault(password, DEFAULT_KDF_COST, { userName });
-      settings.userName = userName;
-      saveSettings();
-      await store.saveHeader(header);
-      await store.unlock(header, vaultKey);
-      await migrateLocalLegacy();
+      const kdf = await api.prelogin(account);
+      const kek = deriveKek(password, kdf);
+      try {
+        const authKey = authKeyFromKek(kek);
+        let session: { token: string; header: VaultHeader };
+        try { session = await api.login(account, authKey); } finally { wipe(authKey); }
+        const vaultKey = unlockWithKek(session.header, kek);
+        await startSession(account, session.token, session.header, vaultKey);
+      } finally {
+        wipe(kek);
+      }
+      enterApp();
+    });
+  });
+
+  onSubmit('panel-signup', form => {
+    const account = username(form, 'signup-username');
+    const password = $input('signup-password').value;
+    const source = signupSource();
+    if (!account) return;
+    if (source === 'new' && !checkNewPassword(form, password, $input('signup-confirm').value)) return;
+    if (source !== 'new' && !password) { setError(form, 'Enter the password of that vault.'); return; }
+    void busy(form, async () => {
+      let header: VaultHeader;
+      let vaultKey: Uint8Array;
+      let recoveryKey: string;
+      let authKey: Uint8Array;
+      let recoveryAuth: Uint8Array;
+      let notes: Envelope[] = [];
+
+      if (source === 'new') {
+        const v = createVault(password, DEFAULT_KDF_COST, { userName: account });
+        ({ header, vaultKey, recoveryKey, authKey } = v);
+        recoveryAuth = v.recoveryAuthKey;
+      } else {
+        const from = source === 'local' ? localVault : await readBackupFile();
+        if (!from) throw new Error('No vault was found in this browser.');
+        const kek = deriveKek(password, from.header.kdf);
+        try {
+          try { vaultKey = unlockWithKek(from.header, kek); } catch (err) { friendly(err); throw err; }
+          authKey = authKeyFromKek(kek);
+        } finally {
+          wipe(kek);
+        }
+        // We never had the old recovery key, so the account gets a fresh one.
+        const rotated = rotateRecoveryKey(from.header, vaultKey);
+        header = readProfile(rotated.header, vaultKey) ? rotated.header : setProfile(rotated.header, vaultKey, { userName: account });
+        recoveryKey = rotated.recoveryKey;
+        recoveryAuth = rotated.recoveryAuthKey;
+        notes = from.notes;
+      }
+
+      let session: { token: string; header: VaultHeader };
+      try {
+        session = await api.signup({ username: account, header, authKey, recoveryAuthKey: recoveryAuth, notes });
+      } finally {
+        wipe(authKey); wipe(recoveryAuth);
+      }
+      settings.userName = readProfile(header, vaultKey)?.userName ?? account;
+      await startSession(account, session.token, header, vaultKey, notes);
+      await migrateLegacyPlaintext();
       if (!store.activeNotes().length) welcomeNotes().forEach(store.addNote);
       await store.flush();
+      await sync.syncNow();
+      // Only remove the browser copy once it is safely in a real database.
+      if (source === 'local' && persistentServer) await deleteLocalVault();
       $('recovery-key-text').textContent = recoveryKey;
       showPanel('recovery');
     });
@@ -190,72 +338,58 @@ export function wireLockScreen(): void {
   $('btn-download-recovery').onclick = () => {
     const key = $('recovery-key-text').textContent ?? '';
     download('cherrion-recovery-key.txt',
-      `Cherrion recovery key\nCreated ${new Date().toLocaleString()}\n\n${key}\n\nAnyone with this key can reset your vault password. Keep it offline.\n`,
+      `Cherrion recovery key\nAccount: ${settings.accountName}\nCreated ${new Date().toLocaleString()}\n\n${key}\n\nAnyone with this key and your username can reset your password. Keep it offline.\n`,
       'text/plain');
   };
 
-  onSubmit('panel-unlock', form => {
-    const password = $input('unlock-password').value;
-    void busy(form, async () => {
-      const header = await db.getHeader();
-      if (!header) { await showLockScreen(); return; }
-      const key = unlockWithPassword(header, password);
-      await store.unlock(header, key);
-      enterApp();
-    });
-  });
-
   onSubmit('panel-recover', form => {
-    const recoveryKey = $input('recover-key').value;
+    const account = username(form, 'recover-username');
+    const recoveryText = $input('recover-key').value;
     const password = $input('recover-password').value;
+    if (!account) return;
     if (!checkNewPassword(form, password, $input('recover-confirm').value)) return;
     void busy(form, async () => {
-      const header = await db.getHeader();
-      if (!header) { await showLockScreen(); return; }
-      const key = unlockWithRecoveryKey(header, recoveryKey);
-      const next: VaultHeader = rewrapPassword(header, key, password);
-      await store.saveHeader(next);
-      await store.unlock(next, key);
+      const rAuth = recoveryAuthKey(recoveryText);
+      try {
+        const header = await api.recoverStart(account, rAuth);
+        const vaultKey = unlockWithRecoveryKey(header, recoveryText);
+        const next = rewrapPasswordWithAuth(header, vaultKey, password);
+        try {
+          const session = await api.recoverFinish(account, rAuth, next.header, next.authKey);
+          await startSession(account, session.token, next.header, vaultKey);
+        } finally {
+          wipe(next.authKey);
+        }
+      } finally {
+        wipe(rAuth);
+      }
       enterApp();
       toast('Password reset. Your recovery key still works; ⚙ Settings can make a new one.', 'info', 7000);
     });
   });
 
-  onSubmit('panel-join', form => {
-    const url = $input('join-url').value.trim();
-    const room = $input('join-room').value.trim();
-    const password = $input('join-password').value;
-    if (!validUrl(url)) { setError(form, 'The sync server URL must start with http:// or https://'); return; }
-    if (!room) { setError(form, 'Enter the sync room key used on your other device.'); return; }
-    void busy(form, async () => {
-      const { header, records } = await friendlyFetch(url, () => sync.fetchVaultFromRoom(url, room));
-      const key = unlockWithPassword(header, password);
-      settings.syncUrl = url;
-      settings.syncKey = room;
-      saveSettings();
-      await store.saveHeader(header);
-      await store.unlock(header, key);
-      await migrateLocalLegacy();
-      await sync.absorbRoom(records);
-      enterApp();
-    });
-  });
-
-  $('btn-lock').onclick = () => void lockApp(true);
-  shell.lock = () => void lockApp(true);
-  store.onLockRequest(() => void lockApp(false));
+  $('btn-lock').onclick = () => void confirmLogout();
+  shell.lock = () => void confirmLogout();
+  store.onLockRequest(() => void lockApp());
+  sync.onSessionExpired(message => void lockApp({ skipSave: true, reason: message }));
 
   for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const) {
     window.addEventListener(type, markActivity, { capture: true, passive: true });
   }
   setInterval(() => {
     const minutes = settings.autoLockMinutes;
-    if (store.isUnlocked() && minutes > 0 && idleFor() > minutes * 60_000) {
-      void lockApp(false).then(() => toast('Locked after inactivity.'));
-    }
+    if (!store.isUnlocked() || minutes <= 0 || idleFor() <= minutes * 60_000) return;
+    // Never discard edits the server has not received: wait until they are saved.
+    if (store.unsavedCount()) { void sync.syncNow(); return; }
+    void lockApp().then(() => toast('Logged out after inactivity.'));
   }, 15_000);
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') store.flush().catch(err => console.error(err));
+    if (document.visibilityState === 'hidden' && store.isUnlocked()) {
+      void store.flush().then(() => sync.syncNow()).catch(err => console.error(err));
+    }
+  });
+  window.addEventListener('beforeunload', e => {
+    if (store.isUnlocked() && store.unsavedCount()) { e.preventDefault(); void sync.syncNow(); }
   });
 }

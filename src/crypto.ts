@@ -79,7 +79,4 @@ export function wipe(bytes: Uint8Array | null | undefined): void {
 export const toHex = (bytes: Uint8Array): string => sodium.to_hex(bytes);
 export const fromHex = (hex: string): Uint8Array => sodium.from_hex(hex);
 
-export function isSealed(x: unknown): x is Sealed {
-  return typeof x === 'object' && x !== null
-    && typeof (x as Sealed).nonce === 'string' && typeof (x as Sealed).ct === 'string';
-}
+export { isSealed } from './shapes';

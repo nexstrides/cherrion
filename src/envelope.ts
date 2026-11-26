@@ -2,7 +2,7 @@
 // Only id, updatedAt and deleted are visible, and all three are bound into the
 // associated data, so a server cannot alter them or move ciphertext between notes.
 import { DecryptError, openString, seal } from './crypto';
-import { VAULT_RECORD_ID, normalizeNote, type Note } from './model';
+import { normalizeNote, type Note } from './model';
 
 export interface Envelope { id: string; updatedAt: number; deleted: boolean; v: 1; nonce: string; ct: string }
 
@@ -23,11 +23,4 @@ export function decryptNote(vaultKey: Uint8Array, env: Envelope): Note {
   return note;
 }
 
-export function isEnvelope(x: unknown): x is Envelope {
-  if (typeof x !== 'object' || x === null) return false;
-  const e = x as Partial<Envelope>;
-  return typeof e.id === 'string' && e.id.length > 0 && e.id !== VAULT_RECORD_ID
-    && typeof e.updatedAt === 'number' && Number.isFinite(e.updatedAt)
-    && typeof e.deleted === 'boolean' && e.v === 1
-    && typeof e.nonce === 'string' && typeof e.ct === 'string';
-}
+export { isEnvelope } from './shapes';

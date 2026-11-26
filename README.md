@@ -5,8 +5,8 @@ Below is the **complete, structured project documentation** formatted so you can
 # Cherrion — Project Documentation & Work History
 
 **Project Name:** Cherrion (CherryTree + Notion + Windows Sticky Notes)  
-**Architecture:** Local-First, End-to-End Encrypted Web App (TypeScript + Vite, libsodium) + Optional Zero-Dependency Node.js Sync Relay  
-**Deliverables Created:** `index.html`, `src/` (TypeScript app and styles), `tests/`, `sync-server.js`
+**Architecture:** End-to-End Encrypted Web App (TypeScript + Vite, libsodium) on Vercel, with a small serverless API and Postgres  
+**Deliverables Created:** `index.html`, `src/` (TypeScript app and styles), `api/` (Vercel functions), `tests/`
 
 ---
 
@@ -20,6 +20,7 @@ Below is the **complete, structured project documentation** formatted so you can
 | **4** | **Cloud Storage & Backup Guidance** | Documented how to upload the package to Google Drive and use JSON export/import with Google Drive for Desktop. |
 | **5** | **Data Persistence Documentation** | Detailed all three data storage locations (`localStorage`, `sync-data/` folder, and JSON exports) along with browser storage caveats. |
 | **6** | **Encrypted Vault & Templates (Step 1)** | Moved to TypeScript + Vite. Notes are encrypted on the device (Argon2id + XChaCha20-Poly1305 via libsodium) and stored in IndexedDB; the sync server and backups only ever see ciphertext. Added a vault password with a recovery key, auto-lock, a new-page template picker (Email account, Website login, Secure note, Meeting), categories, and field-group / secret-field blocks. |
+| **7** | **Online Version on Vercel + Postgres** | The web app became online-only: username/password accounts on a Vercel serverless API with Postgres (Neon), automatic encrypted saving and multi-device sync, offline edits kept until reconnect, password reset with the recovery key, and a one-time move of the vault saved in the browser into the account. |
 
 ---
 
@@ -27,7 +28,7 @@ Below is the **complete, structured project documentation** formatted so you can
 
 1. **Lightweight:** Plain TypeScript and DOM code with no UI framework. The only runtime dependency is libsodium; Vite, TypeScript and Vitest are development tools.
 2. **Maintainable Modular Structure:** Data model, templates, encryption, storage, sync and UI each live in their own module under `src/`, with unit tests for the security-critical parts in `tests/`.
-3. **Local-First Reliability:** Every edit is encrypted and saved to the browser's IndexedDB within a quarter of a second, so the app works fully offline.
+3. **Online, Zero-Knowledge Storage:** Every edit is encrypted in the browser and saved to the account within about a second; the server never sees plaintext or the password.
 4. **Conflict-Safe Syncing:** Uses per-note timestamps (`updatedAt`) and soft-delete flags (`deleted: true` tombstones) so offline edits across devices merge using Last-Write-Wins without resurrecting deleted notes.
 5. **Predictable Block Editing:** Uses auto-resizing `<textarea>` elements instead of `contenteditable` to prevent cross-browser cursor glitches and messy HTML paste behavior.
 6. **Zero-Knowledge Encryption:** The vault password never leaves the device. Storage, sync and backups only hold ciphertext, and each note's id, timestamp and deleted flag are bound to its ciphertext so a server cannot tamper with them.
@@ -55,9 +56,9 @@ Below is the **complete, structured project documentation** formatted so you can
 * **Always-on-Top Pop-Out Windows:** Clicking `↗ Pop-Out` opens a floating sticky note window via the **Document Picture-in-Picture API** (stays above all other OS windows in Chrome/Edge), with `window.open` popup fallback in other browsers.
 * **Live Synchronization:** Edits inside a floating sticky note sync immediately back to the main tree and editor.
 
-### D. Sync, Theme & Backup (`src/store.ts`, `src/sync.ts`, `sync-server.js`)
+### D. Accounts, Sync, Theme & Backup (`src/store.ts`, `src/sync.ts`, `api/`)
 * **Instant Multi-Tab Sync:** Uses `BroadcastChannel` (`cherrion_sync`) to keep open tabs synchronized.
-* **Self-Hosted Sync Server (`sync-server.js`):** ~45-line Node.js HTTP server (`PORT 3456`) with CORS enabled and room-based JSON persistence (`POST /sync/:room`).
+* **Online Accounts (`api/`):** Vercel serverless functions with Postgres. Log in with a username and password from any device; the browser sends only a one-way auth key derived from the password, and the server stores only encrypted notes. Changes save automatically and other devices pick them up within about 20 seconds (or with **Sync now**).
 * **Dark / Light Mode:** CSS-variable theme switcher (`🌓`) persisted in settings.
 * **Portable Backups:** Export full workspace to `.json` and import/merge `.json` backups without overwriting newer notes.
 
@@ -81,13 +82,12 @@ Below is the **complete, structured project documentation** formatted so you can
 
 ## 4. Data Storage Locations
 
-1. **Browser IndexedDB (Primary):**
-   * Database `cherrion`: the vault header (wrapped keys only) and one encrypted envelope per note
-   * User preferences & sync config (not secret): `localStorage` key `cherrion_settings_v1`
-2. **Optional Sync Server Folder:**
-   * Saved on disk as `sync-data/<room-key>.json`, holding encrypted envelopes plus a `__vault__` record
-3. **Manual Backups:**
-   * Downloaded as `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export encrypted backup**; only the same vault can open it
+1. **Postgres on Vercel (the only place notes live):**
+   * `cherrion_accounts`: username, the key-wrapped vault header, and SHA-256 hashes of the login and recovery auth keys
+   * `cherrion_notes`: one encrypted envelope per note (only id, timestamp and deleted flag are readable)
+   * `cherrion_sessions`: hashed session tokens (12 hours)
+2. **Browser:** nothing but non-secret preferences in `localStorage` (`cherrion_settings_v1`: theme, auto-logout, last username). Decrypted notes exist only in memory while you are logged in.
+3. **Manual Backups:** `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export encrypted backup**; only your password or recovery key can open it.
 
 ---
 
@@ -96,27 +96,26 @@ Below is the **complete, structured project documentation** formatted so you can
 ### Step 1: Install
 * Install Node.js 22.12 or newer, then run `npm install` in the project folder.
 
-### Step 2: Launch Locally (Offline Mode)
-1. Run `npm run dev` and open `http://localhost:5173` in Chrome, Edge, or Firefox. Your vault is stored per browser and per address, so keep using `localhost:5173`; the app redirects `127.0.0.1` there automatically. (The app is a module bundle, so double-clicking `index.html` no longer works. `npm run build` produces `dist/`, which `npm run preview` serves.)
-2. Create your vault password and save the recovery key it shows.
-3. Click **＋** to pick a template for a new page, **↳ Sub-note** for nested child notes, or press `Ctrl + K` to search.
-4. `npm test` runs the unit tests and `npm run typecheck` checks types.
+### Step 2: Run Locally
+1. `npm run dev`, then open `http://localhost:5173`. The API runs inside the dev server with a **temporary in-memory database** (the login screen warns about it).
+2. To use the real database instead: `npm run dev:live` (the local app talks to `https://cherrion-note.vercel.app`), or put `DATABASE_URL=...` in `.env.local` (`vercel env pull .env.local` fetches it).
+3. `npm test` runs the unit tests, `npm run typecheck` checks the browser and server code, `npm run build` builds `dist/`.
 
-### Step 3: Use Blocks & Sticky Notes
-1. Click inside any block and type `/` to insert Headings, To-do lists, Callouts, Quotes, Code blocks, or Dividers.
+### Step 3: Deploy to Vercel (cherrion-note.vercel.app)
+1. In the Vercel project: **Storage → Create Database → Neon (Postgres)** and connect it to the project. This adds `DATABASE_URL`. Tables are created automatically on the first request.
+2. Optional: add an environment variable `CHERRION_SECRET` (any long random string).
+3. Deploy (Framework preset **Vite**, build `npm run build`, output `dist`). The `api/` folder becomes serverless functions automatically.
+
+### Step 4: Accounts and Devices
+1. Open the site and choose **Create an account**. Start with an empty vault, the vault saved in this browser by an earlier version, or an encrypted backup file. Save the recovery key it shows.
+2. On any other device, **Log in** with the same username and password.
+3. Forgot the password? **Use your recovery key** on the login screen.
+4. Offline: keep the tab open. The status shows **Offline · N unsaved** and the changes are saved when you reconnect (closing the tab first asks for confirmation).
+
+### Step 5: Use Blocks & Sticky Notes
+1. Click inside any block and type `/` to insert headings, to-dos, callouts, quotes, code, dividers, pages, field groups, secret fields or 2FA codes.
 2. Click **📌 Pin Sticky** and choose a color to add a note to the **📌 Stickies** board.
-3. Click **↗ Pop-Out** (best in Chrome/Edge) to float the sticky note above other desktop apps.
-
-### Step 4: Enable Multi-Device Sync (Optional)
-1. Run `npm run sync-server` (or `node sync-server.js`) in the project folder.
-2. In the app, click **⚙ Settings**, set **Sync Server URL** to `http://localhost:3456` (or your server/LAN IP), enter a **Sync Room Key**, and click **Save & Sync**.
-3. On another device, choose **Join it from a sync server** on the first screen and enter the same URL, room key and vault password.
-
-### Step 5: Backup via Google Drive (Zero-Server Option)
-1. Click **⚙ Settings → ⬇ Export encrypted backup**.
-2. Save the `.json` file into your **Google Drive** (web upload or Google Drive for Desktop folder). It is encrypted, so Drive cannot read it.
-3. On another device that has joined the same vault, click **⚙ Settings → ⬆ Import backup** to merge changes.
-
+3. Click **Pop-Out** (best in Chrome/Edge) to float the sticky note above other desktop apps.
 ### Step 6: Optional Native Desktop App Upgrade
 * To turn this folder into a ~5 MB native Windows/Mac/Linux app with system tray support, initialize a **Tauri** project (`npm create tauri-app`) and point `frontendDist` to the `cherrion-notes` directory.
 

@@ -180,51 +180,49 @@ export function clearAppDom(): void {
 
 // ---- Sync status ----
 
-/** Status shown under the user name: Local only / Syncing… / Online · synced / Offline / Sync error. */
+/** Status under the user name: Online · saved / Saving… / Offline · N unsaved / Sync error. */
 function renderSyncState(s: sync.SyncState = sync.getSyncState()): void {
   const status = $('sync-status');
-  let text = 'Local only';
-  let kind = 'local';
-  let title = 'Notes are saved on this device only. Set up sync from this menu.';
-  if (settings.syncUrl && !navigator.onLine) {
-    text = 'Offline'; kind = 'offline';
-    title = 'No connection. Changes are saved on this device and sync when you are back online.';
+  const unsaved = store.isUnlocked() ? store.unsavedCount() : 0;
+  let text = 'Online';
+  let kind = 'ok';
+  let title = 'Signed in. Changes are saved to your account automatically.';
+  if (!navigator.onLine || s.kind === 'offline') {
+    text = unsaved ? `Offline · ${unsaved} unsaved` : 'Offline';
+    kind = 'offline';
+    title = 'No connection. Keep this tab open: changes are saved when you are back online.';
   } else if (s.kind === 'syncing') {
-    text = 'Syncing…'; kind = 'syncing'; title = 'Syncing with the server';
+    text = 'Saving…'; kind = 'syncing'; title = 'Saving to your account';
   } else if (s.kind === 'synced') {
-    text = s.unreadable ? `Online · ${s.unreadable} unreadable` : 'Online · synced';
-    kind = 'ok';
-    title = `Last synced ${new Date(s.at).toLocaleTimeString()}`;
+    text = s.unreadable ? `Online · ${s.unreadable} unreadable` : 'Online · saved';
+    title = `Last saved ${new Date(s.at).toLocaleTimeString()}`;
   } else if (s.kind === 'error') {
-    text = 'Sync error'; kind = 'err'; title = s.message;
-  } else if (settings.syncUrl) {
-    text = 'Online'; kind = 'ok'; title = 'Sync is set up';
+    text = 'Save error'; kind = 'err'; title = s.message;
   }
   status.textContent = text;
   status.className = `sync-status ${kind}`;
   status.title = title;
   renderUserChip();
-  $('btn-user').title = `${$('user-name').textContent} · ${title}`;
+  $('btn-user').title = `${$('user-name').textContent} (${settings.accountName}) · ${title}`;
 }
 
 async function syncFromMenu(): Promise<void> {
-  if (!settings.syncUrl) { openSettings(); $input('input-sync-url').focus(); return; }
-  if (!navigator.onLine) { toast('You are offline. Changes are kept on this device and sync when you reconnect.'); return; }
+  if (!navigator.onLine) { toast('You are offline. Keep this tab open; changes are saved when you reconnect.'); return; }
   await sync.syncNow();
   const s = sync.getSyncState();
   if (s.kind === 'error') toast(s.message, 'error', 7000);
-  else if (s.kind === 'synced') toast('Synced.');
+  else if (s.kind === 'synced') toast('Up to date.');
 }
 
 function wireUserMenu(): void {
   attachMenu($('btn-user') as HTMLButtonElement, {
     ariaLabel: 'Account menu',
     items: () => [
-      { value: 'sync', label: settings.syncUrl ? 'Sync now' : 'Set up sync…', icon: '↻' },
+      { value: 'sync', label: 'Sync now', icon: '↻' },
       { value: 'settings', label: 'Settings', icon: '⚙' },
       { value: 'profile', label: 'Edit name', icon: '👤' },
       { value: 'theme', label: settings.dark ? 'Light mode' : 'Dark mode', icon: '🌓' },
-      { value: 'lock', label: 'Lock vault', icon: '🔒' },
+      { value: 'lock', label: 'Log out', icon: '🔒' },
     ],
     onSelect: action => {
       if (action === 'sync') void syncFromMenu();
@@ -234,7 +232,7 @@ function wireUserMenu(): void {
       else if (action === 'lock') shell.lock();
     },
   });
-  window.addEventListener('online', () => { renderSyncState(); if (settings.syncUrl && store.isUnlocked()) void sync.syncNow(); });
+  window.addEventListener('online', () => { renderSyncState(); if (store.isUnlocked()) void sync.syncNow(); });
   window.addEventListener('offline', () => renderSyncState());
 }
 
@@ -244,15 +242,14 @@ let autoLockDropdown: Dropdown | null = null;
 
 function openSettings(): void {
   $input('input-user-name').value = store.getProfile()?.userName ?? settings.userName;
-  $input('input-sync-url').value = settings.syncUrl;
-  $input('input-sync-key').value = settings.syncKey;
+  $('settings-account').textContent = settings.accountName;
   autoLockDropdown?.setValue(String(settings.autoLockMinutes));
   for (const id of ['input-current-password', 'input-new-password', 'input-confirm-password']) $input(id).value = '';
   $('security-error').classList.add('hidden');
   $('new-recovery-output').classList.add('hidden');
   closeNavIfNarrow();
   $('settings-modal').classList.remove('hidden');
-  $input('input-sync-url').focus();
+  $input('input-user-name').focus();
 }
 
 function closeSettings(): void {
@@ -260,11 +257,6 @@ function closeSettings(): void {
   $('settings-modal').classList.add('hidden');
   $('new-recovery-key').textContent = '';
   $('new-recovery-output').classList.add('hidden');
-}
-
-function validSyncUrl(text: string): boolean {
-  if (!text) return true;
-  try { return ['http:', 'https:'].includes(new URL(text).protocol); } catch { return false; }
 }
 
 async function importFile(file: File): Promise<void> {
@@ -276,8 +268,8 @@ async function importFile(file: File): Promise<void> {
       toast('This backup belongs to a different vault, so it cannot be decrypted here.', 'error', 7000);
       return;
     }
-    const { changed, failed } = await store.applyEnvelopes(data.notes);
-    toast(`Merged ${changed} note(s) from the encrypted backup.${failed ? ` ${failed} could not be decrypted.` : ''}`);
+    const { changed, failed } = store.applyEnvelopes(data.notes, true);
+    toast(`Merged ${changed} note(s) from the encrypted backup into your account.${failed ? ` ${failed} could not be decrypted.` : ''}`);
     return;
   }
   if (typeof data === 'object' && data !== null && 'notes' in data) {
@@ -316,7 +308,7 @@ function wireSettings(): void {
     ariaLabel: 'Auto-lock',
     options: AUTO_LOCK_CHOICES.map(m => ({ value: String(m), label: m === 0 ? 'Never' : m === 1 ? 'After 1 minute' : `After ${m} minutes` })),
     value: String(settings.autoLockMinutes),
-    onChange: () => { /* saved with "Save & Sync" */ },
+    onChange: () => { /* saved with the Save button */ },
   });
 
   $('btn-close-settings').onclick = closeSettings;
@@ -328,10 +320,10 @@ function wireSettings(): void {
     if (name === store.getProfile()?.userName) { toast('Name unchanged.'); return; }
     saveProfile.disabled = true;
     try {
-      await store.setUserName(name);
+      store.setUserName(name);
       rememberUserName();
       $input('input-user-name').value = name;
-      toast('Name saved. It syncs to your other devices with the vault.');
+      toast('Name saved to your account.');
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), 'error');
     } finally {
@@ -342,14 +334,9 @@ function wireSettings(): void {
   $('settings-modal').addEventListener('keydown', e => { if (e.key === 'Escape') closeSettings(); });
 
   $('btn-save-settings').onclick = () => {
-    const url = $input('input-sync-url').value.trim();
-    if (!validSyncUrl(url)) { toast('The sync server URL must start with http:// or https://', 'error'); return; }
-    settings.syncUrl = url;
-    settings.syncKey = $input('input-sync-key').value.trim() || 'my-personal-notes';
     if (autoLockDropdown) settings.autoLockMinutes = Number(autoLockDropdown.value);
     saveSettings();
-    closeSettings();
-    if (settings.syncUrl) void sync.syncNow(); else sync.resetSyncState();
+    toast('Preferences saved.');
   };
 
   $('btn-export-json').onclick = async () => {
@@ -484,7 +471,7 @@ export function wireApp(): void {
 
   wireUserMenu();
   sync.onSyncState(renderSyncState);
-  store.onPersisted(() => sync.scheduleSync());
+  store.onPersisted(() => { sync.scheduleSync(); renderSyncState(); });
   store.onChange(({ reason, ids }) => {
     if (!store.isUnlocked()) return;
     if (reason === 'header') { renderUserChip(); rememberUserName(); return; }

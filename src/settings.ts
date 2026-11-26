@@ -1,21 +1,18 @@
-// Non-secret preferences, kept in localStorage.
+// Non-secret preferences, kept in localStorage (no notes or keys are ever stored in the browser).
 const SETTINGS_KEY = 'cherrion_settings_v1';
 
 export interface Settings {
-  syncUrl: string;
-  syncKey: string;
   dark: boolean;
   /** 0 means never. */
   autoLockMinutes: number;
-  /**
-   * Device-local copy of the vault's user name, for the lock-screen greeting and password-manager
-   * autofill. The synced source of truth is the encrypted profile in the vault header.
-   */
+  /** Last account username, to pre-fill the login form. */
+  accountName: string;
+  /** Display name for the login greeting; the synced source of truth is the encrypted profile. */
   userName: string;
 }
 
 export const AUTO_LOCK_CHOICES = [1, 5, 10, 30, 60, 0] as const;
-const DEFAULTS: Settings = { syncUrl: '', syncKey: 'my-personal-notes', dark: false, autoLockMinutes: 10, userName: '' };
+const DEFAULTS: Settings = { dark: false, autoLockMinutes: 10, accountName: '', userName: '' };
 
 function load(): Settings {
   try {
@@ -23,11 +20,10 @@ function load(): Settings {
     if (typeof raw !== 'object' || raw === null) return { ...DEFAULTS };
     const r = raw as Partial<Settings>;
     return {
-      syncUrl: typeof r.syncUrl === 'string' ? r.syncUrl : DEFAULTS.syncUrl,
-      syncKey: typeof r.syncKey === 'string' && r.syncKey ? r.syncKey : DEFAULTS.syncKey,
       dark: r.dark === true,
       autoLockMinutes: (AUTO_LOCK_CHOICES as readonly number[]).includes(r.autoLockMinutes as number)
         ? (r.autoLockMinutes as number) : DEFAULTS.autoLockMinutes,
+      accountName: typeof r.accountName === 'string' ? r.accountName.slice(0, 40) : DEFAULTS.accountName,
       userName: typeof r.userName === 'string' ? r.userName.slice(0, 60) : DEFAULTS.userName,
     };
   } catch {

@@ -1,25 +1,28 @@
-// The unlocked session: the vault key and decrypted notes live only here, in memory.
-// Edits are encrypted and written to IndexedDB shortly after they happen; other tabs are
-// told which notes changed over BroadcastChannel and re-read them from IndexedDB.
+// The unlocked session: the vault key and decrypted notes live only here, in memory. The web app is
+// online-only: nothing is written to browser storage. Edits are encrypted into envelopes and queued
+// in an outbox, which sync.ts pushes to the server shortly after.
+import { api } from './api';
 import { wipe } from './crypto';
-import * as db from './db';
 import { decryptNote, encryptNote, isEnvelope, type Envelope } from './envelope';
 import { now, type Note } from './model';
 import {
-  isVaultHeader, readProfile, rewrapPassword, rotateRecoveryKey, setProfile, unlockWithPassword, verifyHeader,
-  type Profile, type VaultHeader,
+  authKeyFromKek, deriveKek, isVaultHeader, readProfile, rewrapPasswordWithAuth, rotateRecoveryKey, setProfile,
+  unlockWithKek, verifyHeader, type Profile, type VaultHeader,
 } from './vault';
 
 export type ChangeReason = 'external' | 'header';
 /** `ids` lists the notes that were replaced, so the UI can avoid re-rendering the note being edited. */
 export interface Change { reason: ChangeReason; ids: string[] }
 
-type Message = { type: 'notes'; ids: string[] } | { type: 'header' } | { type: 'lock' };
-
 let header: VaultHeader | null = null;
+let headerDirty = false;
 let vaultKey: Uint8Array | null = null;
 let profile: Profile | null = null;
 let notes: Record<string, Note> = {};
+/** Latest encrypted copy of every note (what the server has, or will have once the outbox is sent). */
+let envelopes = new Map<string, Envelope>();
+/** Note ids changed here and not yet confirmed by the server. */
+const outbox = new Set<string>();
 let undecryptable = 0;
 
 const pending = new Set<string>();
@@ -31,23 +34,20 @@ const persistListeners = new Set<() => void>();
 const lockListeners = new Set<() => void>();
 
 export const onChange = (fn: (change: Change) => void) => changeListeners.add(fn);
+/** Local changes are ready to send (sync.ts schedules a push). */
 export const onPersisted = (fn: () => void) => persistListeners.add(fn);
 /** Another tab asked every tab to lock. */
 export const onLockRequest = (fn: () => void) => lockListeners.add(fn);
 const emit = (reason: ChangeReason, ids: string[] = []) => changeListeners.forEach(fn => fn({ reason, ids }));
+const persisted = () => persistListeners.forEach(fn => fn());
 
 const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('cherrion_sync') : null;
-const post = (msg: Message) => channel?.postMessage(msg);
-
 if (channel) {
-  channel.onmessage = (e: MessageEvent<Message>) => {
-    const msg = e.data;
-    if (msg?.type === 'lock') { lockListeners.forEach(fn => fn()); return; }
-    if (!vaultKey) return;
-    if (msg?.type === 'notes') void reloadFromDb(msg.ids);
-    if (msg?.type === 'header') void reloadHeader();
+  channel.onmessage = (e: MessageEvent<{ type: string }>) => {
+    if (e.data?.type === 'lock') lockListeners.forEach(fn => fn());
   };
 }
+export const broadcastLock = (): void => channel?.postMessage({ type: 'lock' });
 
 // ---- Read access ----
 
@@ -59,6 +59,8 @@ export const undecryptableCount = (): number => undecryptable;
 export const allNotes = (): Note[] => Object.values(notes);
 export const activeNotes = (): Note[] => Object.values(notes).filter(n => !n.deleted);
 export const getNote = (id: string | null): Note | undefined => (id ? notes[id] : undefined);
+/** Changes not yet saved on the server (edits made offline, or in the last moment). */
+export const unsavedCount = (): number => new Set([...outbox, ...pending]).size;
 
 function requireKey(): Uint8Array {
   if (!vaultKey) throw new Error('The vault is locked.');
@@ -67,34 +69,32 @@ function requireKey(): Uint8Array {
 
 // ---- Lifecycle ----
 
-/** Stores a header without needing the key (used while creating or joining a vault). */
-export async function saveHeader(h: VaultHeader): Promise<void> {
+export function unlock(h: VaultHeader, key: Uint8Array, initial: Envelope[]): void {
   header = h;
-  await db.putHeader(h);
-  post({ type: 'header' });
-}
-
-export async function unlock(h: VaultHeader, key: Uint8Array): Promise<void> {
-  header = h;
+  headerDirty = false;
   vaultKey = key;
   profile = readProfile(h, key);
   notes = {};
+  envelopes = new Map();
+  outbox.clear();
   undecryptable = 0;
-  for (const env of await db.getAllEnvelopes()) {
+  for (const env of initial) {
+    envelopes.set(env.id, env);
     try { notes[env.id] = decryptNote(key, env); } catch { undecryptable++; }
   }
 }
 
 export async function lock(): Promise<void> {
-  try { await flush(); } catch (err) { console.error('Could not save pending changes before locking', err); }
+  try { await flush(); } catch (err) { console.error('Could not encrypt pending changes before locking', err); }
   wipe(vaultKey);
   vaultKey = null;
+  header = null;
   profile = null;
   notes = {};
+  envelopes = new Map();
+  outbox.clear();
   pending.clear();
 }
-
-export const broadcastLock = (): void => post({ type: 'lock' });
 
 // ---- Local edits ----
 
@@ -132,66 +132,80 @@ function queue(id: string): void {
   pending.add(id);
   flushTimer ??= setTimeout(() => {
     flushTimer = null;
-    flush().catch(err => console.error('Saving encrypted notes failed', err));
+    flush().catch(err => console.error('Encrypting notes failed', err));
   }, 250);
 }
 
-/** Encrypts and writes every queued note now. */
+/** Encrypts every queued note into the outbox now. */
 export function flush(): Promise<void> {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  flushChain = flushChain.then(writePending, writePending);
+  flushChain = flushChain.then(encryptPending, encryptPending);
   return flushChain;
 }
 
-async function writePending(): Promise<void> {
+async function encryptPending(): Promise<void> {
   if (!pending.size || !vaultKey) return;
   const key = vaultKey;
   const ids = [...pending];
   pending.clear();
-  const envelopes = ids.flatMap(id => (notes[id] ? [encryptNote(key, notes[id])] : []));
-  try {
-    await db.putEnvelopes(envelopes);
-  } catch (err) {
-    ids.forEach(id => pending.add(id));
-    throw err;
+  for (const id of ids) {
+    const note = notes[id];
+    if (!note) continue;
+    envelopes.set(id, encryptNote(key, note));
+    outbox.add(id);
   }
-  post({ type: 'notes', ids });
-  persistListeners.forEach(fn => fn());
+  persisted();
 }
+
+// ---- Server round trips (used by sync.ts) ----
+
+/** Envelopes waiting to be sent. */
+export const outgoing = (): Envelope[] => [...outbox].flatMap(id => envelopes.get(id) ?? []);
+
+/** The server stored these; drop them from the outbox unless they were edited again meanwhile. */
+export function confirmSent(sent: Envelope[]): void {
+  for (const env of sent) if (envelopes.get(env.id) === env) outbox.delete(env.id);
+}
+
+/** A profile change to push with the next sync (and clear the flag). */
+export function takeDirtyHeader(): VaultHeader | undefined {
+  if (!headerDirty || !header) return undefined;
+  headerDirty = false;
+  return header;
+}
+export const markHeaderDirty = (): void => { headerDirty = true; };
 
 // ---- Changes from elsewhere ----
 
-function adopt(envelopes: Envelope[]): { accepted: Envelope[]; failed: number } {
+/**
+ * Applies envelopes from the server or a backup file. Last write wins per note. With `upload`,
+ * accepted notes are also queued for the server (used for backup imports).
+ */
+export function applyEnvelopes(list: Envelope[], upload = false): { changed: number; failed: number } {
   const key = requireKey();
-  const accepted: Envelope[] = [];
+  const ids: string[] = [];
   let failed = 0;
-  for (const env of envelopes) {
+  for (const env of list) {
     const local = notes[env.id];
     if (local && env.updatedAt <= local.updatedAt) continue;
     try {
       notes[env.id] = decryptNote(key, env);
+      envelopes.set(env.id, env);
       pending.delete(env.id);
-      accepted.push(env);
+      if (upload) outbox.add(env.id); else outbox.delete(env.id);
+      ids.push(env.id);
     } catch {
       failed++;
     }
   }
-  return { accepted, failed };
-}
-
-/** Applies envelopes from the sync server or a backup. Last write wins per note. */
-export async function applyEnvelopes(envelopes: Envelope[]): Promise<{ changed: number; failed: number }> {
-  const { accepted, failed } = adopt(envelopes);
-  if (accepted.length) {
-    const ids = accepted.map(e => e.id);
-    await db.putEnvelopes(accepted);
-    post({ type: 'notes', ids });
+  if (ids.length) {
     emit('external', ids);
+    if (upload) persisted();
   }
-  return { changed: accepted.length, failed };
+  return { changed: ids.length, failed };
 }
 
-/** Encrypts plaintext notes from the legacy format. Last write wins per note. */
+/** Encrypts plaintext notes from the legacy format and queues them for the server. */
 export async function importPlainNotes(list: Note[]): Promise<number> {
   const ids: string[] = [];
   for (const note of list) {
@@ -208,63 +222,65 @@ export async function importPlainNotes(list: Note[]): Promise<number> {
   return ids.length;
 }
 
-async function reloadFromDb(ids: string[]): Promise<void> {
-  const envelopes = (await Promise.all(ids.map(id => db.getEnvelope(id)))).filter((e): e is Envelope => !!e);
-  const { accepted } = adopt(envelopes);
-  if (accepted.length) emit('external', accepted.map(e => e.id));
-}
-
-async function reloadHeader(): Promise<void> {
-  const h = await db.getHeader();
-  if (h && vaultKey && verifyHeader(h, vaultKey)) {
-    header = h;
-    profile = readProfile(h, vaultKey);
-    emit('header');
-  }
-}
-
-/** Adopts a header from the sync server if it is newer and signed with this vault's key. */
-export async function adoptHeader(h: VaultHeader): Promise<boolean> {
+/** Adopts a header from the server if it is newer and signed with this vault's key. */
+export function adoptHeader(h: VaultHeader): boolean {
   if (!header || !vaultKey || h.vaultId !== header.vaultId || h.updatedAt <= header.updatedAt) return false;
   if (!verifyHeader(h, vaultKey)) return false;
-  await saveHeader(h);
+  header = h;
   profile = readProfile(h, vaultKey);
   emit('header');
   return true;
 }
 
-/** Stores a new user name in the encrypted profile; it syncs with the vault header. */
-export async function setUserName(userName: string): Promise<void> {
+/** Stores a new user name in the encrypted profile; the next sync sends it with the header. */
+export function setUserName(userName: string): void {
   const h = header;
   if (!h) throw new Error('The vault is locked.');
   const key = requireKey();
-  const next = setProfile(h, key, { userName });
-  await saveHeader(next);
-  profile = readProfile(next, key);
+  header = setProfile(h, key, { userName });
+  profile = readProfile(header, key);
+  headerDirty = true;
   emit('header');
-  persistListeners.forEach(fn => fn());
+  persisted();
 }
 
-// ---- Vault maintenance ----
+// ---- Account maintenance (server confirms with the current password's auth key) ----
 
-/** Throws WrongSecretError when `current` is wrong. */
+/** Derives the current password's auth key, and checks the password locally. Throws WrongSecretError. */
+function currentAuthKey(h: VaultHeader, password: string): Uint8Array {
+  const kek = deriveKek(password, h.kdf);
+  try {
+    wipe(unlockWithKek(h, kek));
+    return authKeyFromKek(kek);
+  } finally {
+    wipe(kek);
+  }
+}
+
 export async function changePassword(current: string, next: string): Promise<void> {
   const h = header;
   if (!h) throw new Error('The vault is locked.');
-  wipe(unlockWithPassword(h, current));
-  await saveHeader(rewrapPassword(h, requireKey(), next));
-  persistListeners.forEach(fn => fn());
+  const currentKey = currentAuthKey(h, current);
+  const rewrapped = rewrapPasswordWithAuth(h, requireKey(), next);
+  try {
+    header = await api.updateAccount({ currentAuthKey: currentKey, header: rewrapped.header, authKey: rewrapped.authKey });
+  } finally {
+    wipe(currentKey); wipe(rewrapped.authKey);
+  }
 }
 
-/** Throws WrongSecretError when `current` is wrong. Returns the new recovery key. */
+/** Returns the new recovery key; the old one stops working. */
 export async function newRecoveryKey(current: string): Promise<string> {
   const h = header;
   if (!h) throw new Error('The vault is locked.');
-  wipe(unlockWithPassword(h, current));
+  const currentKey = currentAuthKey(h, current);
   const rotated = rotateRecoveryKey(h, requireKey());
-  await saveHeader(rotated.header);
-  persistListeners.forEach(fn => fn());
-  return rotated.recoveryKey;
+  try {
+    header = await api.updateAccount({ currentAuthKey: currentKey, header: rotated.header, recoveryAuthKey: rotated.recoveryAuthKey });
+    return rotated.recoveryKey;
+  } finally {
+    wipe(currentKey); wipe(rotated.recoveryAuthKey);
+  }
 }
 
 // ---- Encrypted backups ----
@@ -274,7 +290,7 @@ export interface Backup { format: 'cherrion-backup'; v: 1; exportedAt: number; h
 export async function makeBackup(): Promise<Backup> {
   await flush();
   if (!header) throw new Error('The vault is locked.');
-  return { format: 'cherrion-backup', v: 1, exportedAt: now(), header, notes: await db.getAllEnvelopes() };
+  return { format: 'cherrion-backup', v: 1, exportedAt: now(), header, notes: [...envelopes.values()] };
 }
 
 export function isBackup(x: unknown): x is Backup {

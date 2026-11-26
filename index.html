@@ -1,10 +1,10 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <!-- connect-src stays open because the sync server URL is user-configured; step 2 pins it to the real backend. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <!-- The API is same-origin (/api on Vercel), so data can only go back to this site. ws: is for the dev server. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <meta name="referrer" content="no-referrer" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%92%3C/text%3E%3C/svg%3E" />
   <title>Cherrion</title>
@@ -13,80 +13,82 @@
   <div id="lock-screen" class="lock-screen">
     <div class="lock-card">
       <div class="lock-brand">🍒 Cherrion</div>
+      <p id="dev-db-warning" class="notice warn hidden">Development server with a temporary in-memory database: accounts and notes disappear when it restarts. Use <code>npm run dev:live</code> (or set <code>DATABASE_URL</code>) for the real database.</p>
 
-      <form id="panel-setup" class="lock-panel hidden" novalidate>
-        <h2>Create your vault</h2>
-        <p class="muted">Notes are encrypted on this device with your vault password before they are saved or synced. Nobody else can read them, including any sync server. If you forget the password, only your recovery key can get you back in.</p>
-        <p id="setup-legacy-note" class="notice hidden"></p>
-        <label class="field-label">User name
-          <input id="setup-username" type="text" autocomplete="username" maxlength="60" placeholder="e.g. Albert" spellcheck="false" />
+      <form id="panel-login" class="lock-panel hidden" novalidate>
+        <h2 id="login-title">Log in</h2>
+        <label class="field-label">Username
+          <input id="login-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
         </label>
-        <label class="field-label">Vault password
-          <input id="setup-password" type="password" autocomplete="new-password" />
-        </label>
-        <label class="field-label">Confirm password
-          <input id="setup-confirm" type="password" autocomplete="new-password" />
+        <label class="field-label">Password
+          <input id="login-password" type="password" autocomplete="current-password" />
         </label>
         <p class="form-error hidden" role="alert"></p>
-        <button type="submit" class="primary-btn wide">Create vault</button>
-        <button type="button" id="link-join" class="link-btn">Already have a vault on another device? Join it from a sync server</button>
+        <button type="submit" class="primary-btn wide">Log in</button>
+        <button type="button" id="link-recover" class="link-btn">Forgot your password? Use your recovery key</button>
+        <div class="lock-alt">
+          <p class="muted small">New to Cherrion?</p>
+          <button type="button" id="link-signup" class="action-btn wide-btn">Create an account</button>
+        </div>
+      </form>
+
+      <form id="panel-signup" class="lock-panel hidden" novalidate>
+        <h2>Create your account</h2>
+        <p class="muted">Your notes are encrypted in this browser with your password before they are saved online. Nobody else can read them, not even the server. If you forget the password, only your recovery key can get you back in.</p>
+        <p id="signup-legacy-note" class="notice hidden"></p>
+        <label class="field-label">Username
+          <input id="signup-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" placeholder="e.g. albert" />
+        </label>
+        <fieldset id="signup-source" class="start-with">
+          <legend>Start with</legend>
+          <label class="check"><input type="radio" name="signup-source" value="new" checked /> An empty vault</label>
+          <label id="source-local" class="check hidden"><input type="radio" name="signup-source" value="local" /> <span id="source-local-text">The vault saved in this browser</span></label>
+          <label class="check"><input type="radio" name="signup-source" value="file" /> An encrypted backup file</label>
+        </fieldset>
+        <label id="signup-file-wrap" class="field-label hidden">Backup file
+          <input id="signup-file" type="file" accept=".json,application/json" />
+        </label>
+        <label class="field-label"><span id="signup-password-label">Password</span>
+          <input id="signup-password" type="password" autocomplete="new-password" />
+        </label>
+        <label id="signup-confirm-wrap" class="field-label">Confirm password
+          <input id="signup-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <p id="signup-source-hint" class="muted small"></p>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Create account</button>
+        <button type="button" id="link-login" class="link-btn">Already have an account? Log in</button>
       </form>
 
       <div id="panel-recovery" class="lock-panel hidden">
         <h2>Save your recovery key</h2>
-        <p class="muted">This is the only way back in if you forget your vault password, and it is shown only once. Keep it somewhere safe and offline, such as a password manager or on paper.</p>
+        <p class="muted">This is the only way back in if you forget your password, and it is shown only once. Keep it somewhere safe and offline, such as a password manager or on paper.</p>
         <code id="recovery-key-text" class="recovery-key"></code>
         <div class="row">
           <button type="button" id="btn-copy-recovery" class="action-btn">📋 Copy</button>
           <button type="button" id="btn-download-recovery" class="action-btn">⬇ Save as text file</button>
         </div>
         <label class="check"><input id="recovery-saved" type="checkbox" /> I saved my recovery key somewhere safe</label>
-        <button type="button" id="btn-recovery-continue" class="primary-btn wide" disabled>Open my vault</button>
+        <button type="button" id="btn-recovery-continue" class="primary-btn wide" disabled>Open my notes</button>
       </div>
-
-      <form id="panel-unlock" class="lock-panel hidden" novalidate>
-        <h2 id="unlock-title">Unlock your vault</h2>
-        <!-- Lets password managers pair the saved vault password with this user name. -->
-        <input id="unlock-username" type="text" autocomplete="username" hidden />
-        <label class="field-label">Vault password
-          <input id="unlock-password" type="password" autocomplete="current-password" />
-        </label>
-        <p class="form-error hidden" role="alert"></p>
-        <button type="submit" class="primary-btn wide">Unlock</button>
-        <button type="button" id="link-recover" class="link-btn">Forgot your password? Use your recovery key</button>
-      </form>
 
       <form id="panel-recover" class="lock-panel hidden" novalidate>
         <h2>Reset with your recovery key</h2>
+        <label class="field-label">Username
+          <input id="recover-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        </label>
         <label class="field-label">Recovery key
           <input id="recover-key" type="text" autocomplete="off" spellcheck="false" placeholder="XXXXXXXX-XXXXXXXX-…" />
         </label>
-        <label class="field-label">New vault password
+        <label class="field-label">New password
           <input id="recover-password" type="password" autocomplete="new-password" />
         </label>
         <label class="field-label">Confirm new password
           <input id="recover-confirm" type="password" autocomplete="new-password" />
         </label>
         <p class="form-error hidden" role="alert"></p>
-        <button type="submit" class="primary-btn wide">Reset password and unlock</button>
-        <button type="button" id="link-unlock" class="link-btn">Back to unlock</button>
-      </form>
-
-      <form id="panel-join" class="lock-panel hidden" novalidate>
-        <h2>Join an existing vault</h2>
-        <p class="muted">Use the sync server URL and room key from your other device, and your vault password.</p>
-        <label class="field-label">Sync server URL
-          <input id="join-url" type="url" placeholder="http://localhost:3456" autocomplete="off" />
-        </label>
-        <label class="field-label">Sync room key
-          <input id="join-room" type="text" autocomplete="off" spellcheck="false" />
-        </label>
-        <label class="field-label">Vault password
-          <input id="join-password" type="password" autocomplete="current-password" />
-        </label>
-        <p class="form-error hidden" role="alert"></p>
-        <button type="submit" class="primary-btn wide">Join vault</button>
-        <button type="button" id="link-setup" class="link-btn">Back to creating a new vault</button>
+        <button type="submit" class="primary-btn wide">Reset password and log in</button>
+        <button type="button" id="link-login-from-recover" class="link-btn">Back to log in</button>
       </form>
 
       <div id="panel-fatal" class="lock-panel hidden">
@@ -101,7 +103,7 @@
       <div class="sidebar-header">
         <span class="brand">🍒 Cherrion</span>
         <div class="header-actions">
-          <button id="btn-lock" title="Lock vault" aria-label="Lock vault">🔒</button>
+          <button id="btn-lock" title="Log out" aria-label="Log out">🔒</button>
           <button id="btn-theme" title="Toggle Dark/Light Mode" aria-label="Toggle dark mode">🌓</button>
           <button id="btn-new-root" title="New page" aria-label="New page">＋</button>
         </div>
@@ -143,7 +145,7 @@
             <button id="btn-pin-sticky" class="action-btn" aria-pressed="false"><span aria-hidden="true">📌</span><span class="btn-label"> Pin Sticky</span></button>
             <div id="sticky-color-select"></div>
           </div>
-          <button id="btn-popout" class="action-btn" title="Float as an always-on-top sticky window" aria-label="Pop-Out"><span aria-hidden="true">↗</span><span class="btn-label"> Pop-Out</span></button>
+          <button id="btn-popout" class="action-btn" title="Float as an always-on-top sticky window" aria-label="Pop-Out"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg><span class="btn-label">Pop-Out</span></button>
           <button id="btn-add-child" class="action-btn" title="Add sub-note" aria-label="Sub-note"><span aria-hidden="true">↳</span><span class="btn-label"> Sub-note</span></button>
           <button id="btn-delete-note" class="action-btn danger" title="Delete this page" aria-label="Delete page">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 3h4a1 1 0 0 1 1 1v3H9V4a1 1 0 0 1 1-1zM6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" /></svg><span class="btn-label">Delete</span>
@@ -169,7 +171,7 @@
       <section id="sticky-board-view" class="sticky-board hidden">
         <div class="sticky-board-header">
           <h2>📌 Pinned Sticky Notes</h2>
-          <p>Quick desktop-style board. Click <strong>↗ Pop-Out</strong> on any card to float it above other apps. Notes with fields or formatting are read-only here.</p>
+          <p>Quick desktop-style board. Click <strong>Pop-Out</strong> on any card to float it above other apps. Notes with fields or formatting are read-only here.</p>
         </div>
         <div id="sticky-grid" class="sticky-grid"></div>
       </section>
@@ -218,22 +220,14 @@
         <button id="btn-save-profile" class="action-btn">Save name</button>
       </div>
 
-      <h4 class="section-title">Sync</h4>
-      <label class="field-label">
-        Sync server URL (optional, run <code>npm run sync-server</code>)
-        <input id="input-sync-url" type="text" placeholder="http://localhost:3456" autocomplete="off" />
-      </label>
-      <label class="field-label">
-        Sync room key
-        <input id="input-sync-key" type="text" placeholder="my-personal-notes" autocomplete="off" spellcheck="false" />
-      </label>
-      <p class="muted small">The server only ever receives encrypted notes. The room key decides which room they go in, so use the same one on every device.</p>
+      <h4 class="section-title">Account</h4>
+      <p class="small">Signed in as <strong id="settings-account"></strong>. Notes are saved to your account automatically and are encrypted before they leave this browser.</p>
       <div class="field-label">
-        Auto-lock
+        Log out automatically
         <div id="select-auto-lock"></div>
       </div>
       <div class="modal-actions">
-        <button id="btn-save-settings" class="primary-btn">Save & Sync</button>
+        <button id="btn-save-settings" class="primary-btn">Save</button>
       </div>
 
       <h4 class="section-title">Backup</h4>

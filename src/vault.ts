@@ -4,7 +4,7 @@
 // The header holds only wrapped keys, so it is safe to store next to the ciphertext on a sync
 // server. A MAC under the vault key stops anyone without the key from swapping in a forged header.
 import {
-  DEFAULT_KDF_COST, DecryptError, deriveKey, deriveSubkey, fromHex, isSealed, mac, newKdfParams, open,
+  DEFAULT_KDF_COST, DecryptError, deriveKey, deriveSubkey, fromHex, mac, newKdfParams, open,
   openString, randomBytes, randomKey, seal, toB64, toHex, verifyMac, wipe,
   type KdfParams, type Sealed,
 } from './crypto';
@@ -96,7 +96,29 @@ export function passwordProblem(password: string): string | null {
   return null;
 }
 
-export interface NewVault { header: VaultHeader; vaultKey: Uint8Array; recoveryKey: string }
+// ---- Login keys for the online account ----
+// The server never sees the password or the KEK. It only gets one-way subkeys ("auth keys") and
+// stores their SHA-256, so knowing what the server stores cannot decrypt anything.
+const AUTH_CONTEXT = 'cherrion/auth/v1';
+const RECOVERY_AUTH_CONTEXT = 'cherrion/recovery-auth/v1';
+
+/** Argon2id of the password: the key-encryption key that unwraps the vault key. */
+export const deriveKek = (password: string, kdf: KdfParams): Uint8Array => deriveKey(password, kdf);
+/** What the browser sends to log in (derived from the KEK, cannot be turned back into it). */
+export const authKeyFromKek = (kek: Uint8Array): Uint8Array => deriveSubkey(kek, AUTH_CONTEXT);
+/** What the browser sends to reset a password with the recovery key. */
+export function recoveryAuthKey(recoveryKey: string): Uint8Array {
+  const bytes = parseRecoveryKey(recoveryKey);
+  try { return deriveSubkey(bytes, RECOVERY_AUTH_CONTEXT); } finally { wipe(bytes); }
+}
+
+export interface NewVault {
+  header: VaultHeader;
+  vaultKey: Uint8Array;
+  recoveryKey: string;
+  authKey: Uint8Array;
+  recoveryAuthKey: Uint8Array;
+}
 
 export function createVault(password: string, cost = DEFAULT_KDF_COST, profile?: Profile): NewVault {
   const vaultKey = randomKey();
@@ -113,7 +135,10 @@ export function createVault(password: string, cost = DEFAULT_KDF_COST, profile?:
       recoveryWrap: seal(recoveryKek, vaultKey, wrapAad(vaultId, 'recovery')),
       ...(profile ? { profile: sealProfile(vaultKey, vaultId, profile) } : {}),
     });
-    return { header, vaultKey, recoveryKey: formatRecoveryKey(recovery) };
+    return {
+      header, vaultKey, recoveryKey: formatRecoveryKey(recovery),
+      authKey: authKeyFromKek(kek), recoveryAuthKey: deriveSubkey(recovery, RECOVERY_AUTH_CONTEXT),
+    };
   } finally {
     wipe(kek); wipe(recoveryKek); wipe(recovery);
   }
@@ -126,8 +151,6 @@ function unwrap(header: VaultHeader, kek: Uint8Array, slot: 'password' | 'recove
   } catch (err) {
     if (err instanceof DecryptError) throw new WrongSecretError(wrongMessage);
     throw err;
-  } finally {
-    wipe(kek);
   }
   if (!verifyHeader(header, vaultKey)) {
     wipe(vaultKey);
@@ -136,38 +159,52 @@ function unwrap(header: VaultHeader, kek: Uint8Array, slot: 'password' | 'recove
   return vaultKey;
 }
 
+/** Unwraps the vault key with an already-derived KEK (the caller wipes the KEK). */
+export function unlockWithKek(header: VaultHeader, kek: Uint8Array): Uint8Array {
+  return unwrap(header, kek, 'password', 'Wrong password.');
+}
+
 export function unlockWithPassword(header: VaultHeader, password: string): Uint8Array {
-  return unwrap(header, deriveKey(password, header.kdf), 'password', 'Wrong password.');
+  const kek = deriveKey(password, header.kdf);
+  try { return unwrap(header, kek, 'password', 'Wrong password.'); } finally { wipe(kek); }
 }
 
 export function unlockWithRecoveryKey(header: VaultHeader, recoveryKey: string): Uint8Array {
   const bytes = parseRecoveryKey(recoveryKey);
+  const kek = deriveSubkey(bytes, RECOVERY_CONTEXT);
   try {
-    return unwrap(header, deriveSubkey(bytes, RECOVERY_CONTEXT), 'recovery', 'That recovery key does not match this vault.');
+    return unwrap(header, kek, 'recovery', 'That recovery key does not match this vault.');
   } finally {
-    wipe(bytes);
+    wipe(kek); wipe(bytes);
   }
 }
 
-/** New password (with a fresh salt) for the same vault key. Notes do not need re-encrypting. */
-export function rewrapPassword(header: VaultHeader, vaultKey: Uint8Array, newPassword: string, cost = DEFAULT_KDF_COST): VaultHeader {
+/** New password (with a fresh salt) for the same vault key, plus the new login key. Notes are not re-encrypted. */
+export function rewrapPasswordWithAuth(header: VaultHeader, vaultKey: Uint8Array, newPassword: string, cost = DEFAULT_KDF_COST): { header: VaultHeader; authKey: Uint8Array } {
   const kdf = newKdfParams(cost);
   const kek = deriveKey(newPassword, kdf);
   try {
     const { mac: _old, ...rest } = header;
-    return sign(vaultKey, {
+    const next = sign(vaultKey, {
       ...rest,
       kdf,
       updatedAt: Math.max(now(), header.updatedAt + 1),
       passwordWrap: seal(kek, vaultKey, wrapAad(header.vaultId, 'password')),
     });
+    return { header: next, authKey: authKeyFromKek(kek) };
   } finally {
     wipe(kek);
   }
 }
 
+export function rewrapPassword(header: VaultHeader, vaultKey: Uint8Array, newPassword: string, cost = DEFAULT_KDF_COST): VaultHeader {
+  const { header: next, authKey } = rewrapPasswordWithAuth(header, vaultKey, newPassword, cost);
+  wipe(authKey);
+  return next;
+}
+
 /** Replaces the recovery slot. The previous recovery key stops working. */
-export function rotateRecoveryKey(header: VaultHeader, vaultKey: Uint8Array): { header: VaultHeader; recoveryKey: string } {
+export function rotateRecoveryKey(header: VaultHeader, vaultKey: Uint8Array): { header: VaultHeader; recoveryKey: string; recoveryAuthKey: Uint8Array } {
   const recovery = randomBytes(32);
   const recoveryKek = deriveSubkey(recovery, RECOVERY_CONTEXT);
   try {
@@ -177,7 +214,7 @@ export function rotateRecoveryKey(header: VaultHeader, vaultKey: Uint8Array): { 
       updatedAt: Math.max(now(), header.updatedAt + 1),
       recoveryWrap: seal(recoveryKek, vaultKey, wrapAad(header.vaultId, 'recovery')),
     });
-    return { header: next, recoveryKey: formatRecoveryKey(recovery) };
+    return { header: next, recoveryKey: formatRecoveryKey(recovery), recoveryAuthKey: deriveSubkey(recovery, RECOVERY_AUTH_CONTEXT) };
   } finally {
     wipe(recoveryKek); wipe(recovery);
   }
@@ -194,21 +231,4 @@ export function parseRecoveryKey(text: string): Uint8Array {
   return fromHex(hex);
 }
 
-const isInt = (x: unknown, min: number, max: number): x is number =>
-  typeof x === 'number' && Number.isInteger(x) && x >= min && x <= max;
-
-/** Structural check for headers read from a sync server or backup file, with bounded KDF cost. */
-export function isVaultHeader(x: unknown): x is VaultHeader {
-  if (typeof x !== 'object' || x === null) return false;
-  const h = x as Partial<VaultHeader>;
-  const kdf = h.kdf as Partial<KdfParams> | undefined;
-  return h.format === 'cherrion-vault' && h.v === 1
-    && typeof h.vaultId === 'string' && h.vaultId.length > 0
-    && isInt(h.createdAt, 0, Number.MAX_SAFE_INTEGER) && isInt(h.updatedAt, 0, Number.MAX_SAFE_INTEGER)
-    && typeof kdf === 'object' && kdf !== null && kdf.alg === 'argon2id13'
-    && isInt(kdf.opslimit, 1, 10) && isInt(kdf.memlimit, 8192, 1024 * 1024 * 1024)
-    && typeof kdf.salt === 'string'
-    && isSealed(h.passwordWrap) && isSealed(h.recoveryWrap)
-    && (h.profile === undefined || isSealed(h.profile))
-    && typeof h.mac === 'string';
-}
+export { isVaultHeader } from './shapes';

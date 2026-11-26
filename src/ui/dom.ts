@@ -24,6 +24,22 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/** Box-with-arrow "open in new window" icon (same drawing as the toolbar Pop-Out button). */
+export const POPOUT_ICON = 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5';
+
+/** Stroke icon drawn with currentColor (styled by the .icon class). */
+export function svgIcon(path: string): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS(ns, 'path');
+  p.setAttribute('d', path);
+  svg.append(p);
+  return svg;
+}
+
 export function toast(message: string, kind: 'info' | 'error' = 'info', ms = 4500): void {
   const item = el('div', { className: `toast ${kind}`, text: message });
   item.setAttribute('role', kind === 'error' ? 'alert' : 'status');

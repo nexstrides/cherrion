@@ -3,7 +3,7 @@
 // read-only with secrets masked, so the lossy plain-text round trip can never destroy data.
 import { isPlainTextEditable, noteToPlainText, plainTextToBlocks, STICKY_COLORS, type Note } from '../model';
 import * as store from '../store';
-import { $, el, toast } from './dom';
+import { $, el, POPOUT_ICON, svgIcon, toast } from './dom';
 import { markActivity, render, selectNote, ui } from './state';
 
 const popouts = new Set<Window>();
@@ -33,7 +33,8 @@ function stickyCard(note: Note): HTMLElement {
 
   const head = el('div', { className: 'sticky-card-head' },
     title,
-    el('button', { className: 'sticky-mini sticky-popout', type: 'button', text: '↗ Pop-Out', onclick: () => void openFloatingSticky(note.id) }),
+    el('button', { className: 'sticky-mini sticky-popout', type: 'button', title: 'Pop out as a floating window', onclick: () => void openFloatingSticky(note.id) },
+      svgIcon(POPOUT_ICON), 'Pop-Out'),
   );
 
   let body: HTMLElement;
