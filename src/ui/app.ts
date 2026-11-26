@@ -1,6 +1,8 @@
 // Main workspace: sidebar tree (with drag and drop), tabs, top bar actions, the slide-in sidebar on
 // narrow screens, and the settings modal.
+import * as session from '../desktop/session';
 import { parseLegacyNotes } from '../legacy';
+import { DESKTOP } from '../platform';
 import { CATEGORY_IDS, searchableText, type CategoryId, type Note } from '../model';
 import { AUTO_LOCK_CHOICES, saveSettings, settings } from '../settings';
 import * as store from '../store';
@@ -172,6 +174,9 @@ export function clearAppDom(): void {
   $input('search-input').value = '';
   $('new-recovery-output').classList.add('hidden');
   $('new-recovery-key').textContent = '';
+  $('sync-recovery-output').classList.add('hidden');
+  $('sync-recovery-key').textContent = '';
+  for (const id of ['sync-password', 'input-current-password', 'input-new-password', 'input-confirm-password']) $input(id).value = '';
   ui.search = '';
   ui.revealed.clear();
   ui.editing.clear();
@@ -180,10 +185,40 @@ export function clearAppDom(): void {
 
 // ---- Sync status ----
 
+/** Desktop: everything is saved in the file; the status says whether it is synced too. */
+function desktopStatus(s: sync.SyncState, unsynced: number): { text: string; kind: string; title: string } {
+  const file = session.filePath() ?? 'the vault file';
+  const problem = session.fileProblem();
+  if (problem) return { text: 'File error', kind: 'err', title: problem };
+  if (!session.linkedAccount()) return { text: 'Saved to file', kind: 'ok', title: `Saved in ${file}. Link an online account in Settings to sync.` };
+  const remote = session.remoteState();
+  const saved = `Saved in ${file}.`;
+  if (remote.kind === 'denied') return { text: 'Sync paused', kind: 'err', title: remote.message };
+  if (!navigator.onLine || remote.kind === 'offline' || s.kind === 'offline') {
+    return { text: unsynced ? `Offline · ${unsynced} to sync` : 'Offline · saved', kind: 'offline', title: `${saved} Changes sync when you are back online.` };
+  }
+  if (remote.kind === 'connecting' || s.kind === 'syncing') return { text: 'Syncing…', kind: 'syncing', title: saved };
+  if (s.kind === 'error') return { text: 'Sync error', kind: 'err', title: s.message };
+  if (s.kind === 'synced') {
+    return { text: s.unreadable ? `Synced · ${s.unreadable} unreadable` : 'Synced', kind: 'ok', title: `${saved} Last synced ${new Date(s.at).toLocaleTimeString()}.` };
+  }
+  return { text: unsynced ? `${unsynced} to sync` : 'Saved to file', kind: 'ok', title: saved };
+}
+
 /** Status under the user name: Online · saved / Saving… / Offline · N unsaved / Sync error. */
 function renderSyncState(s: sync.SyncState = sync.getSyncState()): void {
   const status = $('sync-status');
   const unsaved = store.isUnlocked() ? store.unsavedCount() : 0;
+  if (DESKTOP) {
+    const d = desktopStatus(s, unsaved);
+    status.textContent = d.text;
+    status.className = `sync-status ${d.kind}`;
+    status.title = d.title;
+    renderUserChip();
+    const account = session.linkedAccount();
+    $('btn-user').title = `${$('user-name').textContent}${account ? ` (${account.username})` : ''} · ${d.title}`;
+    return;
+  }
   let text = 'Online';
   let kind = 'ok';
   let title = 'Signed in. Changes are saved to your account automatically.';
@@ -207,6 +242,7 @@ function renderSyncState(s: sync.SyncState = sync.getSyncState()): void {
 }
 
 async function syncFromMenu(): Promise<void> {
+  if (shell.syncNow) { await shell.syncNow(); return; }
   if (!navigator.onLine) { toast('You are offline. Keep this tab open; changes are saved when you reconnect.'); return; }
   await sync.syncNow();
   const s = sync.getSyncState();
@@ -218,11 +254,11 @@ function wireUserMenu(): void {
   attachMenu($('btn-user') as HTMLButtonElement, {
     ariaLabel: 'Account menu',
     items: () => [
-      { value: 'sync', label: 'Sync now', icon: '↻' },
+      ...(!DESKTOP || session.linkedAccount() ? [{ value: 'sync', label: 'Sync now', icon: '↻' }] : []),
       { value: 'settings', label: 'Settings', icon: '⚙' },
       { value: 'profile', label: 'Edit name', icon: '👤' },
       { value: 'theme', label: settings.dark ? 'Light mode' : 'Dark mode', icon: '🌓' },
-      { value: 'lock', label: 'Log out', icon: '🔒' },
+      { value: 'lock', label: DESKTOP ? 'Lock' : 'Log out', icon: '🔒' },
     ],
     onSelect: action => {
       if (action === 'sync') void syncFromMenu();
@@ -239,8 +275,12 @@ function wireUserMenu(): void {
 // ---- Settings ----
 
 let autoLockDropdown: Dropdown | null = null;
+const settingsOpenHooks: (() => void)[] = [];
+/** Runs each time Settings opens (the desktop build fills in its file and sync sections). */
+export const onSettingsOpen = (fn: () => void): void => { settingsOpenHooks.push(fn); };
 
 function openSettings(): void {
+  settingsOpenHooks.forEach(fn => fn());
   $input('input-user-name').value = store.getProfile()?.userName ?? settings.userName;
   $('settings-account').textContent = settings.accountName;
   autoLockDropdown?.setValue(String(settings.autoLockMinutes));
@@ -269,7 +309,7 @@ async function importFile(file: File): Promise<void> {
       return;
     }
     const { changed, failed } = store.applyEnvelopes(data.notes, true);
-    toast(`Merged ${changed} note(s) from the encrypted backup into your account.${failed ? ` ${failed} could not be decrypted.` : ''}`);
+    toast(`Merged ${changed} note(s) from the encrypted backup into ${DESKTOP ? 'this file' : 'your account'}.${failed ? ` ${failed} could not be decrypted.` : ''}`);
     return;
   }
   if (typeof data === 'object' && data !== null && 'notes' in data) {
@@ -471,6 +511,7 @@ export function wireApp(): void {
 
   wireUserMenu();
   sync.onSyncState(renderSyncState);
+  if (DESKTOP) session.onDesktopChange(() => renderSyncState());
   store.onPersisted(() => { sync.scheduleSync(); renderSyncState(); });
   store.onChange(({ reason, ids }) => {
     if (!store.isUnlocked()) return;

@@ -6,6 +6,7 @@ import { deleteLocalVault, readLocalVault, type LocalVault } from '../db';
 import type { Envelope } from '../envelope';
 import { clearLegacyLocalNotes, readLegacyLocalNotes, stampForMigration } from '../legacy';
 import { now, textBlock, uid, type Note } from '../model';
+import { DESKTOP } from '../platform';
 import { saveSettings, settings } from '../settings';
 import * as store from '../store';
 import * as sync from '../sync';
@@ -20,12 +21,11 @@ import { clearClipboardNow } from './editor';
 import { idleFor, markActivity, selectNote, shell, ui } from './state';
 import { closeAllPopouts } from './stickies';
 
-type Panel = 'login' | 'signup' | 'recovery' | 'recover' | 'fatal';
-const PANELS: Panel[] = ['login', 'signup', 'recovery', 'recover', 'fatal'];
 const USERNAME = /^[a-z0-9][a-z0-9._-]{2,39}$/;
 
-function showPanel(panel: Panel): void {
-  for (const p of PANELS) $(`panel-${p}`).classList.toggle('hidden', p !== panel);
+/** Shows one start-screen panel (`panel-<name>`) and focuses its first empty input. */
+export function showPanel(panel: string): void {
+  for (const p of document.querySelectorAll('#lock-screen .lock-panel')) p.classList.toggle('hidden', p.id !== `panel-${panel}`);
   for (const e of document.querySelectorAll('#lock-screen .form-error')) e.classList.add('hidden');
   requestAnimationFrame(() => {
     const inputs = [...$(`panel-${panel}`).querySelectorAll<HTMLInputElement>('input:not([type=checkbox]):not([type=radio]):not([type=file])')];
@@ -33,7 +33,7 @@ function showPanel(panel: Panel): void {
   });
 }
 
-function setError(form: HTMLElement, message: string): void {
+export function setError(form: HTMLElement, message: string): void {
   const e = form.querySelector('.form-error');
   if (!e) return;
   e.textContent = message;
@@ -41,7 +41,7 @@ function setError(form: HTMLElement, message: string): void {
 }
 
 /** Disables the form and shows "Working…" while Argon2id and the server run, then shows any error. */
-async function busy(form: HTMLFormElement, work: () => Promise<void>): Promise<void> {
+export async function busy(form: HTMLFormElement, work: () => Promise<void>): Promise<void> {
   const buttons = [...form.querySelectorAll('button')];
   const submit = form.querySelector<HTMLButtonElement>('button[type=submit]');
   const label = submit?.textContent ?? '';
@@ -59,14 +59,14 @@ async function busy(form: HTMLFormElement, work: () => Promise<void>): Promise<v
   }
 }
 
-function checkNewPassword(form: HTMLFormElement, password: string, confirm: string): boolean {
+export function checkNewPassword(form: HTMLFormElement, password: string, confirm: string): boolean {
   const problem = passwordProblem(password);
   if (problem) { setError(form, problem); return false; }
   if (password !== confirm) { setError(form, 'The passwords do not match.'); return false; }
   return true;
 }
 
-function username(form: HTMLFormElement, inputId: string): string | null {
+export function username(form: HTMLFormElement, inputId: string): string | null {
   const u = $input(inputId).value.trim().toLowerCase();
   if (USERNAME.test(u)) return u;
   setError(form, 'Usernames are 3–40 characters: letters, digits, dot, dash or underscore.');
@@ -138,7 +138,7 @@ async function startSession(account: string, token: string, header: VaultHeader,
   sync.startSync();
 }
 
-function enterApp(): void {
+export function enterApp(): void {
   for (const input of document.querySelectorAll<HTMLInputElement>('#lock-screen input')) {
     if (input.type === 'checkbox' || input.type === 'radio') input.checked = input.defaultChecked;
     else input.value = '';
@@ -198,13 +198,16 @@ async function confirmLogout(): Promise<void> {
   await lockApp({ broadcast: true });
 }
 
-function welcomeNotes(): Note[] {
+export function welcomeNotes(): Note[] {
+  const where = DESKTOP
+    ? 'Everything in this vault file is encrypted with your password. You can copy the file anywhere, or link it to an online account in ⚙ Settings to sync.'
+    : 'Everything in your account is encrypted in this browser with your password before it is saved online.';
   return [{
     id: uid(), parentId: null, title: 'Welcome to Cherrion', category: 'note', collapsed: false,
     isSticky: true, stickyColor: 'yellow', updatedAt: now(), deleted: false,
     blocks: [
       textBlock('h2', 'Encrypted notes, templates and sticky notes'),
-      textBlock('callout', 'Everything in your account is encrypted in this browser with your password before it is saved online. Press ＋ to start a page from a template: Email account, Website login, Secure note or Meeting.'),
+      textBlock('callout', `${where} Press ＋ to start a page from a template: Email account, Website login, Secure note or Meeting.`),
       textBlock('todo', 'Create an Email account page from the ＋ template picker'),
       textBlock('todo', 'Type "/" in an empty block for headings, to-dos, field groups, secret fields and 2FA codes'),
       textBlock('todo', 'Keep your recovery key somewhere safe (⚙ Settings can make a new one)'),
@@ -220,7 +223,7 @@ async function migrateLegacyPlaintext(): Promise<void> {
   clearLegacyLocalNotes();
 }
 
-function onSubmit(id: string, handler: (form: HTMLFormElement) => void): void {
+export function onSubmit(id: string, handler: (form: HTMLFormElement) => void): void {
   const form = $(id) as HTMLFormElement;
   form.addEventListener('submit', e => { e.preventDefault(); handler(form); });
 }
@@ -238,6 +241,25 @@ const friendly = (err: unknown): never => {
   if (err instanceof WrongSecretError) throw new Error(err.message === 'Wrong password.' ? 'Wrong password for that vault.' : err.message);
   throw err;
 };
+
+/** The "save your recovery key" panel; `label` names the account or file in the saved text. */
+export function wireRecoveryPanel(label: () => string): void {
+  const saved = $input('recovery-saved');
+  const proceed = $('btn-recovery-continue') as HTMLButtonElement;
+  saved.onchange = () => { proceed.disabled = !saved.checked; };
+  proceed.onclick = () => { proceed.disabled = true; enterApp(); };
+  $('btn-copy-recovery').onclick = () => {
+    navigator.clipboard.writeText($('recovery-key-text').textContent ?? '')
+      .then(() => toast('Recovery key copied. Paste it somewhere safe, then clear your clipboard.'),
+        () => toast('Copy failed: the browser blocked clipboard access.', 'error'));
+  };
+  $('btn-download-recovery').onclick = () => {
+    const key = $('recovery-key-text').textContent ?? '';
+    download('cherrion-recovery-key.txt',
+      `Cherrion recovery key\n${label()}\nCreated ${new Date().toLocaleString()}\n\n${key}\n\nAnyone with this key can reset your password. Keep it offline.\n`,
+      'text/plain');
+  };
+}
 
 export function wireLockScreen(): void {
   $('link-signup').onclick = () => void showSignup();
@@ -326,21 +348,7 @@ export function wireLockScreen(): void {
     });
   });
 
-  const saved = $input('recovery-saved');
-  const proceed = $('btn-recovery-continue') as HTMLButtonElement;
-  saved.onchange = () => { proceed.disabled = !saved.checked; };
-  proceed.onclick = () => { proceed.disabled = true; enterApp(); };
-  $('btn-copy-recovery').onclick = () => {
-    navigator.clipboard.writeText($('recovery-key-text').textContent ?? '')
-      .then(() => toast('Recovery key copied. Paste it somewhere safe, then clear your clipboard.'),
-        () => toast('Copy failed: the browser blocked clipboard access.', 'error'));
-  };
-  $('btn-download-recovery').onclick = () => {
-    const key = $('recovery-key-text').textContent ?? '';
-    download('cherrion-recovery-key.txt',
-      `Cherrion recovery key\nAccount: ${settings.accountName}\nCreated ${new Date().toLocaleString()}\n\n${key}\n\nAnyone with this key and your username can reset your password. Keep it offline.\n`,
-      'text/plain');
-  };
+  wireRecoveryPanel(() => `Account: ${settings.accountName}`);
 
   onSubmit('panel-recover', form => {
     const account = username(form, 'recover-username');

@@ -10,10 +10,15 @@
   "scripts": {
     "dev": "vite",
     "dev:live": "vite --mode live",
+    "dev:desktop": "vite --mode desktop",
     "build": "npm run typecheck && vite build",
+    "build:desktop": "npm run typecheck && vite build --mode desktop",
+    "desktop": "npm run build:desktop && node desktop/py.mjs desktop/main.py",
+    "desktop:package": "npm run build:desktop && node desktop/py.mjs desktop/build.py",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
+    "test:desktop": "node desktop/py.mjs -m unittest discover -s desktop/tests -t desktop",
     "test:watch": "vitest"
   },
   "dependencies": {

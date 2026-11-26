@@ -6,6 +6,15 @@ CLAUDE.md
 # Dependencies and build output
 node_modules/
 dist/
+dist-desktop/
+
+# Desktop app (Python): virtual environment, PyInstaller output, generated version file
+desktop/.venv/
+desktop/build/
+desktop/dist/
+desktop/cherrion_desktop/_version.py
+__pycache__/
+*.cherrion
 
 # Local secrets (e.g. DATABASE_URL from `vercel env pull`) and Vercel CLI state
 .env.local

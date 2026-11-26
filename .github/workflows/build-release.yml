@@ -1,0 +1,97 @@
+# Build and release.
+#
+#   push / pull request to master -> test, then build Cherrion.exe (downloadable from the run's Artifacts)
+#   push a tag vX.Y.Z             -> the same, then publish a GitHub Release with Cherrion.exe attached
+#
+# Release:  bump "version" in package.json, commit, then:  git tag v0.2.0 && git push origin v0.2.0
+# The web version is not deployed from here: Vercel's Git integration deploys master on its own.
+name: Build and release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Vault file + sync client (standard library only, no GUI needed).
+      - run: python -m unittest discover -s desktop/tests -t desktop -v
+
+  desktop:
+    name: Build Cherrion.exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: desktop/requirements-build.txt
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json ($version). Bump the version first."
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run build:desktop
+      - run: python -m pip install -r desktop/requirements-build.txt
+      - run: python desktop/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Cherrion-windows
+          path: desktop/dist/Cherrion.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Cherrion-windows
+          path: dist
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum Cherrion.exe > Cherrion.exe.sha256
+          gh release create "$GITHUB_REF_NAME" Cherrion.exe Cherrion.exe.sha256 \
+            --repo "$GITHUB_REPOSITORY" --title "Cherrion $GITHUB_REF_NAME" --generate-notes

@@ -22,8 +22,10 @@ export const render = {
 /** Shell hooks filled in by app.ts (the slide-in sidebar on narrow screens). */
 export const shell = {
   closeNav: (): void => {},
-  /** Filled in by lock.ts (locks this and every other open tab). */
+  /** Filled in by lock.ts (locks this and every other open tab), or desktop.ts (locks the vault file). */
   lock: (): void => {},
+  /** "Sync now" from the account menu; desktop.ts replaces it (reconnects to the linked account first). */
+  syncNow: null as null | (() => Promise<void>),
 };
 
 export function selectNote(id: string | null): void {

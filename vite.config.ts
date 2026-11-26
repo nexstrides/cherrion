@@ -44,15 +44,18 @@ export default defineConfig(({ mode }) => {
   }
   // `npm run dev:live` sets CHERRION_API_URL (in .env.live) to use the deployed API and database instead.
   const remote = env.CHERRION_API_URL;
+  // `--mode desktop` builds the front end for the Python desktop app (desktop/), which talks to its
+  // vault file and sync server through the pywebview bridge instead of /api.
+  const desktop = mode === 'desktop';
   return {
-    plugins: remote ? [] : [cherrionApi()],
+    plugins: remote || desktop ? [] : [cherrionApi()],
     server: {
       host: '127.0.0.1', port: 5173, strictPort: true,
       ...(remote ? { proxy: { '/api': { target: remote, changeOrigin: true, secure: true } } } : {}),
     },
     preview: { host: '127.0.0.1', port: 4173, strictPort: true },
     // libsodium's "sumo" build (needed for Argon2id) is ~550 kB on its own.
-    build: { target: 'es2022', chunkSizeWarningLimit: 700 },
+    build: { target: 'es2022', chunkSizeWarningLimit: 700, outDir: desktop ? 'dist-desktop' : 'dist', emptyOutDir: true },
     test: {
       environment: 'node',
       include: ['tests/**/*.test.ts'],

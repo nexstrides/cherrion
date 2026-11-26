@@ -1,6 +1,7 @@
 // The unlocked session: the vault key and decrypted notes live only here, in memory. The web app is
 // online-only: nothing is written to browser storage. Edits are encrypted into envelopes and queued
-// in an outbox, which sync.ts pushes to the server shortly after.
+// in an outbox, which sync.ts pushes to the server shortly after. The desktop build also writes every
+// envelope to its vault file through a Journal (see src/desktop/session.ts).
 import { api } from './api';
 import { wipe } from './crypto';
 import { decryptNote, encryptNote, isEnvelope, type Envelope } from './envelope';
@@ -32,6 +33,23 @@ let flushChain: Promise<void> = Promise.resolve();
 const changeListeners = new Set<(change: Change) => void>();
 const persistListeners = new Set<() => void>();
 const lockListeners = new Set<() => void>();
+
+/**
+ * Where encrypted changes are also written as they happen (the desktop build's vault file).
+ * `dirty` means "not yet on the sync server". The web build has no journal: the server is the store.
+ */
+export interface Journal {
+  put(envelopes: Envelope[], dirty: boolean): void;
+  /** The server stored these exact versions. */
+  clean(envelopes: Envelope[]): void;
+  header(h: VaultHeader): void;
+}
+let journal: Journal | null = null;
+export const setJournal = (j: Journal | null): void => { journal = j; };
+
+/** False for a desktop vault file that is not linked to an online account (password changes stay local). */
+let remoteAccount = true;
+export const setRemoteAccount = (linked: boolean): void => { remoteAccount = linked; };
 
 export const onChange = (fn: (change: Change) => void) => changeListeners.add(fn);
 /** Local changes are ready to send (sync.ts schedules a push). */
@@ -69,7 +87,8 @@ function requireKey(): Uint8Array {
 
 // ---- Lifecycle ----
 
-export function unlock(h: VaultHeader, key: Uint8Array, initial: Envelope[]): void {
+/** `unsent` lists notes changed earlier but not yet on the server (kept in the desktop vault file). */
+export function unlock(h: VaultHeader, key: Uint8Array, initial: Envelope[], unsent: string[] = []): void {
   header = h;
   headerDirty = false;
   vaultKey = key;
@@ -82,6 +101,7 @@ export function unlock(h: VaultHeader, key: Uint8Array, initial: Envelope[]): vo
     envelopes.set(env.id, env);
     try { notes[env.id] = decryptNote(key, env); } catch { undecryptable++; }
   }
+  for (const id of unsent) if (envelopes.has(id)) outbox.add(id);
 }
 
 export async function lock(): Promise<void> {
@@ -148,12 +168,16 @@ async function encryptPending(): Promise<void> {
   const key = vaultKey;
   const ids = [...pending];
   pending.clear();
+  const sealed: Envelope[] = [];
   for (const id of ids) {
     const note = notes[id];
     if (!note) continue;
-    envelopes.set(id, encryptNote(key, note));
+    const env = encryptNote(key, note);
+    envelopes.set(id, env);
     outbox.add(id);
+    sealed.push(env);
   }
+  if (sealed.length) journal?.put(sealed, true);
   persisted();
 }
 
@@ -164,7 +188,20 @@ export const outgoing = (): Envelope[] => [...outbox].flatMap(id => envelopes.ge
 
 /** The server stored these; drop them from the outbox unless they were edited again meanwhile. */
 export function confirmSent(sent: Envelope[]): void {
-  for (const env of sent) if (envelopes.get(env.id) === env) outbox.delete(env.id);
+  const confirmed = sent.filter(env => envelopes.get(env.id) === env);
+  for (const env of confirmed) outbox.delete(env.id);
+  if (confirmed.length) journal?.clean(confirmed);
+}
+
+/** Every stored envelope (the desktop build uploads them when a file is linked to an account). */
+export const allEnvelopes = (): Envelope[] => [...envelopes.values()];
+
+/** Queues every note for the server, e.g. right after linking a vault file to an account. */
+export function markAllUnsent(): void {
+  if (!envelopes.size) return;
+  for (const id of envelopes.keys()) outbox.add(id);
+  journal?.put([...envelopes.values()], true);
+  persisted();
 }
 
 /** A profile change to push with the next sync (and clear the flag). */
@@ -184,6 +221,7 @@ export const markHeaderDirty = (): void => { headerDirty = true; };
 export function applyEnvelopes(list: Envelope[], upload = false): { changed: number; failed: number } {
   const key = requireKey();
   const ids: string[] = [];
+  const accepted: Envelope[] = [];
   let failed = 0;
   for (const env of list) {
     const local = notes[env.id];
@@ -194,10 +232,12 @@ export function applyEnvelopes(list: Envelope[], upload = false): { changed: num
       pending.delete(env.id);
       if (upload) outbox.add(env.id); else outbox.delete(env.id);
       ids.push(env.id);
+      accepted.push(env);
     } catch {
       failed++;
     }
   }
+  if (accepted.length) journal?.put(accepted, upload);
   if (ids.length) {
     emit('external', ids);
     if (upload) persisted();
@@ -226,10 +266,44 @@ export async function importPlainNotes(list: Note[]): Promise<number> {
 export function adoptHeader(h: VaultHeader): boolean {
   if (!header || !vaultKey || h.vaultId !== header.vaultId || h.updatedAt <= header.updatedAt) return false;
   if (!verifyHeader(h, vaultKey)) return false;
-  header = h;
-  profile = readProfile(h, vaultKey);
+  replaceHeader(h);
   emit('header');
   return true;
+}
+
+/**
+ * Takes an account's header (its password and recovery slots) for a desktop vault file being linked,
+ * even if it is older, while keeping this file's newer user name. False if it is another vault.
+ */
+export function adoptAccountHeader(h: VaultHeader): boolean {
+  if (!header || !vaultKey || h.vaultId !== header.vaultId || !verifyHeader(h, vaultKey)) return false;
+  const mine = profile;
+  let next = h;
+  if (mine && header.updatedAt >= h.updatedAt && readProfile(h, vaultKey)?.userName !== mine.userName) {
+    next = setProfile(h, vaultKey, mine);
+    headerDirty = true;
+  }
+  replaceHeader(next);
+  emit('header');
+  return true;
+}
+
+/**
+ * For creating an online account from a desktop vault file: checks the password and prepares a fresh
+ * recovery key (the old one was never sent anywhere). Nothing changes until adoptHeader(result.header).
+ */
+export function prepareAccount(password: string): { header: VaultHeader; authKey: Uint8Array; recoveryAuthKey: Uint8Array; recoveryKey: string } {
+  const h = header;
+  if (!h) throw new Error('The vault is locked.');
+  const authKey = currentAuthKey(h, password);
+  const rotated = rotateRecoveryKey(h, requireKey());
+  return { header: rotated.header, authKey, recoveryAuthKey: rotated.recoveryAuthKey, recoveryKey: rotated.recoveryKey };
+}
+
+function replaceHeader(h: VaultHeader): void {
+  header = h;
+  profile = vaultKey ? readProfile(h, vaultKey) : null;
+  journal?.header(h);
 }
 
 /** Stores a new user name in the encrypted profile; the next sync sends it with the header. */
@@ -237,8 +311,7 @@ export function setUserName(userName: string): void {
   const h = header;
   if (!h) throw new Error('The vault is locked.');
   const key = requireKey();
-  header = setProfile(h, key, { userName });
-  profile = readProfile(header, key);
+  replaceHeader(setProfile(h, key, { userName }));
   headerDirty = true;
   emit('header');
   persisted();
@@ -257,13 +330,16 @@ function currentAuthKey(h: VaultHeader, password: string): Uint8Array {
   }
 }
 
+/** With an online account the server must accept the change first; a local vault file just re-wraps. */
 export async function changePassword(current: string, next: string): Promise<void> {
   const h = header;
   if (!h) throw new Error('The vault is locked.');
   const currentKey = currentAuthKey(h, current);
   const rewrapped = rewrapPasswordWithAuth(h, requireKey(), next);
   try {
-    header = await api.updateAccount({ currentAuthKey: currentKey, header: rewrapped.header, authKey: rewrapped.authKey });
+    replaceHeader(remoteAccount
+      ? await api.updateAccount({ currentAuthKey: currentKey, header: rewrapped.header, authKey: rewrapped.authKey })
+      : rewrapped.header);
   } finally {
     wipe(currentKey); wipe(rewrapped.authKey);
   }
@@ -276,7 +352,9 @@ export async function newRecoveryKey(current: string): Promise<string> {
   const currentKey = currentAuthKey(h, current);
   const rotated = rotateRecoveryKey(h, requireKey());
   try {
-    header = await api.updateAccount({ currentAuthKey: currentKey, header: rotated.header, recoveryAuthKey: rotated.recoveryAuthKey });
+    replaceHeader(remoteAccount
+      ? await api.updateAccount({ currentAuthKey: currentKey, header: rotated.header, recoveryAuthKey: rotated.recoveryAuthKey })
+      : rotated.header);
     return rotated.recoveryKey;
   } finally {
     wipe(currentKey); wipe(rotated.recoveryAuthKey);

@@ -5,8 +5,8 @@ Below is the **complete, structured project documentation** formatted so you can
 # Cherrion — Project Documentation & Work History
 
 **Project Name:** Cherrion (CherryTree + Notion + Windows Sticky Notes)  
-**Architecture:** End-to-End Encrypted Web App (TypeScript + Vite, libsodium) on Vercel, with a small serverless API and Postgres  
-**Deliverables Created:** `index.html`, `src/` (TypeScript app and styles), `api/` (Vercel functions), `tests/`
+**Architecture:** End-to-End Encrypted Web App (TypeScript + Vite, libsodium) on Vercel, with a small serverless API and Postgres, plus an offline Windows desktop app (Python + pywebview + SQLite) that can sync with it  
+**Deliverables Created:** `index.html`, `src/` (TypeScript app and styles), `api/` (Vercel functions), `desktop/` (desktop app), `tests/`, `.github/workflows/`
 
 ---
 
@@ -21,6 +21,7 @@ Below is the **complete, structured project documentation** formatted so you can
 | **5** | **Data Persistence Documentation** | Detailed all three data storage locations (`localStorage`, `sync-data/` folder, and JSON exports) along with browser storage caveats. |
 | **6** | **Encrypted Vault & Templates (Step 1)** | Moved to TypeScript + Vite. Notes are encrypted on the device (Argon2id + XChaCha20-Poly1305 via libsodium) and stored in IndexedDB; the sync server and backups only ever see ciphertext. Added a vault password with a recovery key, auto-lock, a new-page template picker (Email account, Website login, Secure note, Meeting), categories, and field-group / secret-field blocks. |
 | **7** | **Online Version on Vercel + Postgres** | The web app became online-only: username/password accounts on a Vercel serverless API with Postgres (Neon), automatic encrypted saving and multi-device sync, offline edits kept until reconnect, password reset with the recovery key, and a one-time move of the vault saved in the browser into the account. |
+| **8** | **Offline Desktop App (Python + SQLite)** | A Windows desktop app (`desktop/`, Python + pywebview, packaged as one `Cherrion.exe`) that keeps each vault in one encrypted `.cherrion` SQLite file, like a CherryTree document. Works fully offline; a file can be linked to an online account (sync URL) and syncs with the web version. GitHub Actions builds the exe on every push and publishes a release for each `v*` tag. |
 
 ---
 
@@ -88,6 +89,7 @@ Below is the **complete, structured project documentation** formatted so you can
    * `cherrion_sessions`: hashed session tokens (12 hours)
 2. **Browser:** nothing but non-secret preferences in `localStorage` (`cherrion_settings_v1`: theme, auto-logout, last username). Decrypted notes exist only in memory while you are logged in.
 3. **Manual Backups:** `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export encrypted backup**; only your password or recovery key can open it.
+4. **Desktop app:** each vault is one `.cherrion` file wherever you save it (a SQLite database holding the key-wrapped header and the encrypted notes, plus which notes are not yet synced). The app's own folder `%APPDATA%\Cherrion` holds only the recent-files list (`desktop.json`) and window preferences (`WebView\`).
 
 ---
 
@@ -115,9 +117,23 @@ Below is the **complete, structured project documentation** formatted so you can
 ### Step 5: Use Blocks & Sticky Notes
 1. Click inside any block and type `/` to insert headings, to-dos, callouts, quotes, code, dividers, pages, field groups, secret fields or 2FA codes.
 2. Click **📌 Pin Sticky** and choose a color to add a note to the **📌 Stickies** board.
-3. Click **Pop-Out** (best in Chrome/Edge) to float the sticky note above other desktop apps.
-### Step 6: Optional Native Desktop App Upgrade
-* To turn this folder into a ~5 MB native Windows/Mac/Linux app with system tray support, initialize a **Tauri** project (`npm create tauri-app`) and point `frontendDist` to the `cherrion-notes` directory.
+3. Click **Pop-Out** (best in Chrome/Edge) to float the sticky note above other desktop apps. (Not available in the desktop app yet.)
+
+### Step 6: Desktop App (offline, one file)
+**Use it:** download `Cherrion.exe` from the GitHub **Releases** page and run it. No installation is needed.
+1. **Create a new vault file**: choose your name, a password, and where to save the `.cherrion` file. Save the recovery key it shows.
+2. **Open a vault file**: pick a recent file (or browse) and enter its password. This works offline.
+3. **Get my online account on this PC**: downloads your web account into a new file that keeps syncing. It opens with your account password.
+4. **Sync an existing file**: ⚙ Settings → **Online sync** → *Link to my account* (same vault) or *Create an account from this file*. Changes made offline are kept in the file and uploaded when you are back online.
+5. 🔒 locks the file (wipes the key and decrypted notes from memory); it also locks after the auto-lock time.
+6. **Double-click to open:** ⚙ Settings → Vault file → *Open .cherrion files with Cherrion*. After that, double-clicking a `.cherrion` file in File Explorer opens Cherrion with that file ready for its password, like `.ctb` files in CherryTree. It's registered for your Windows user only (no admin rights) and follows `Cherrion.exe` if you move it.
+
+**Develop it:**
+1. `python -m venv desktop/.venv`, then `desktop\.venv\Scripts\pip install -r desktop/requirements-build.txt`.
+2. `npm run desktop` builds the front end (`dist-desktop/`) and opens the app. For live reload: `npm run dev:desktop` in one terminal and `desktop\.venv\Scripts\python desktop/main.py --dev --debug` in another.
+3. `npm run test:desktop` runs the vault-file and sync-client tests. `npm run desktop:package` builds `desktop/dist/Cherrion.exe`.
+
+**Release it:** `.github/workflows/build-release.yml` tests and builds `Cherrion.exe` on every push and pull request (download it from the run's *Artifacts*). To publish a release, bump `version` in `package.json`, commit, then `git tag v0.2.0 && git push origin v0.2.0`; the workflow attaches `Cherrion.exe` and its SHA-256 to a new GitHub Release.
 
 ---
 

@@ -25,6 +25,19 @@ export const onSessionExpired = (fn: (message: string) => void) => { onExpired =
 /** Highest server revision seen. Pulls re-read a small window below it, which is harmless (last write wins). */
 let since = 0;
 const OVERLAP = 100;
+const sinceListeners = new Set<(rev: number) => void>();
+/** The desktop build saves the revision in the vault file, so the next run only pulls what is new. */
+export const onSince = (fn: (rev: number) => void) => sinceListeners.add(fn);
+export const getSince = (): number => since;
+export const setSince = (rev: number): void => { since = Math.max(0, Math.floor(rev)); };
+function advance(rev: number): void {
+  if (rev <= since) return;
+  since = rev;
+  sinceListeners.forEach(fn => fn(rev));
+}
+
+/** A newer local header (e.g. a name changed while offline) is pushed once per version. */
+let headerPushedFor = 0;
 
 /** Everything in the account, right after login. */
 export async function loadAll(): Promise<{ notes: Envelope[]; header: VaultHeader | null }> {
@@ -35,7 +48,7 @@ export async function loadAll(): Promise<{ notes: Envelope[]; header: VaultHeade
     const res = await api.sync({ since, notes: [] });
     all.push(...res.notes);
     header = res.header;
-    since = res.rev;
+    advance(res.rev);
     if (!res.more) break;
   }
   return { notes: all, header };
@@ -54,13 +67,17 @@ async function syncOnce(): Promise<void> {
     let unreadable = 0;
     for (;;) {
       unreadable += store.applyEnvelopes(res.notes).failed;
-      since = Math.max(since, res.rev);
+      advance(res.rev);
       if (!res.more) break;
       res = await api.sync({ since, notes: [] });
     }
     store.adoptHeader(res.header);
+    const local = store.getHeader();
+    const pushHeader = !!local && local.vaultId === res.header.vaultId && local.updatedAt > res.header.updatedAt
+      && headerPushedFor !== local.updatedAt;
+    if (pushHeader && local) { headerPushedFor = local.updatedAt; store.markHeaderDirty(); }
     setState(store.unsavedCount() ? { kind: 'idle' } : { kind: 'synced', at: Date.now(), unreadable });
-    if (store.unsavedCount()) scheduleSync(); // edited while this round was in flight
+    if (store.unsavedCount() || pushHeader) scheduleSync(); // edited while this round was in flight
   } catch (err) {
     if (dirtyHeader) store.markHeaderDirty();
     if (err instanceof ApiError && err.status === 401) { onExpired(err.message); return; }
@@ -94,13 +111,19 @@ export function scheduleSync(delay = 600): void {
 let poller: ReturnType<typeof setInterval> | null = null;
 /** Pulls other devices' changes every 20 s while the page is visible. */
 export function startSync(): void {
-  stopSync();
+  stopTimers();
   poller = setInterval(() => { if (document.visibilityState === 'visible') void syncNow(); }, 20_000);
 }
 
-export function stopSync(): void {
+function stopTimers(): void {
   if (timer) { clearTimeout(timer); timer = null; }
   if (poller) { clearInterval(poller); poller = null; }
+}
+
+/** Stops syncing and forgets the revision (on logout, before another account or file is opened). */
+export function stopSync(): void {
+  stopTimers();
   since = 0;
+  headerPushedFor = 0;
   setState({ kind: 'idle' });
 }

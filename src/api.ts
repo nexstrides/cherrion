@@ -15,21 +15,36 @@ let token: string | null = null;
 export const setSession = (t: string | null): void => { token = t; };
 export const hasSession = (): boolean => token !== null;
 
-async function post(path: string, body: unknown, auth = false): Promise<Record<string, unknown>> {
+/** Sends one request; status 0 means the server could not be reached. */
+export type Transport = (path: string, body: string, token: string | null) => Promise<{ status: number; data: Record<string, unknown> }>;
+
+/** The web build: same-origin /api on Vercel. */
+const fetchTransport: Transport = async (path, body, auth) => {
   let res: Response;
   try {
     res = await fetch(`/api/${path}`, {
       method: 'POST',
       cache: 'no-store',
-      headers: { 'Content-Type': 'application/json', ...(auth && token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: `Bearer ${auth}` } : {}) },
+      body,
     });
   } catch {
-    throw new ApiError('Cannot reach the Cherrion server. Check your internet connection.', 0);
+    return { status: 0, data: {} };
   }
   let data: Record<string, unknown> = {};
   try { data = (await res.json()) as Record<string, unknown>; } catch { /* non-JSON error page */ }
-  if (!res.ok) throw new ApiError(typeof data.error === 'string' ? data.error : `Server error (${res.status}).`, res.status);
+  return { status: res.status, data };
+};
+
+let transport: Transport = fetchTransport;
+/** The desktop build sends requests through Python to the vault file's sync server. */
+export const setTransport = (t: Transport): void => { transport = t; };
+
+async function post(path: string, body: unknown, auth = false): Promise<Record<string, unknown>> {
+  const { status, data } = await transport(path, JSON.stringify(body), auth ? token : null);
+  const message = typeof data.error === 'string' ? data.error : null;
+  if (status === 0) throw new ApiError(message ?? 'Cannot reach the Cherrion server. Check your internet connection.', 0);
+  if (status < 200 || status >= 300) throw new ApiError(message ?? `Server error (${status}).`, status);
   return data;
 }
 

@@ -1,4 +1,6 @@
 // Small DOM helpers. User content is only ever assigned through textContent or value.
+import { py } from '../desktop/bridge';
+import { DESKTOP } from '../platform';
 
 export function $(id: string): HTMLElement {
   const node = document.getElementById(id);
@@ -57,6 +59,13 @@ export function autoResize(area: HTMLTextAreaElement): void {
 }
 
 export function download(filename: string, text: string, type = 'application/json'): void {
+  if (DESKTOP) {
+    // The desktop window has no download bar: ask where to save with the system dialog.
+    py('save_text', filename, text)
+      .then(saved => { if (saved) toast(`Saved to ${saved}`); })
+      .catch((err: unknown) => toast(err instanceof Error ? err.message : String(err), 'error', 7000));
+    return;
+  }
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = el('a', { href: url, download: filename });
   a.click();

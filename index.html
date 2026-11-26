@@ -95,6 +95,74 @@
         <h2>Cherrion could not start</h2>
         <p id="fatal-message" class="form-error"></p>
       </div>
+
+      <!-- Desktop app (vite build --mode desktop): one encrypted .cherrion file per vault. -->
+      <form id="panel-open" class="lock-panel hidden" novalidate>
+        <h2>Open a vault file</h2>
+        <div id="recent-files" class="recent-files" role="radiogroup" aria-label="Recent vault files"></div>
+        <button type="button" id="btn-browse-vault" class="action-btn wide-btn">📂 Browse for a .cherrion file…</button>
+        <label class="field-label">Password
+          <input id="open-password" type="password" autocomplete="current-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Unlock</button>
+        <button type="button" id="link-file-recover" class="link-btn">Forgot the password? Use your recovery key</button>
+        <div class="lock-alt">
+          <button type="button" id="link-create-file" class="action-btn wide-btn">＋ Create a new vault file</button>
+          <button type="button" id="link-download-account" class="action-btn wide-btn">☁ Get my online account on this PC</button>
+        </div>
+      </form>
+
+      <form id="panel-create" class="lock-panel hidden" novalidate>
+        <h2>Create a vault file</h2>
+        <p class="muted">Your notes are kept in one encrypted file on this PC, like a CherryTree document. Copy it or back it up like any file; it opens only with your password. You can link it to an online account later to sync.</p>
+        <label class="field-label">Your name
+          <input id="create-name" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Albert" />
+        </label>
+        <label class="field-label">Password
+          <input id="create-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field-label">Confirm password
+          <input id="create-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Choose where to save…</button>
+        <button type="button" class="link-btn" data-panel="open">Back</button>
+      </form>
+
+      <form id="panel-download" class="lock-panel hidden" novalidate>
+        <h2>Get your online account</h2>
+        <p class="muted">Downloads your encrypted notes into a new vault file on this PC and keeps it in sync. The file opens with your account password, also when you are offline.</p>
+        <label class="field-label">Sync server
+          <input id="download-url" type="text" autocomplete="url" spellcheck="false" autocapitalize="none" />
+        </label>
+        <label class="field-label">Username
+          <input id="download-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        </label>
+        <label class="field-label">Password
+          <input id="download-password" type="password" autocomplete="current-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Choose where to save…</button>
+        <button type="button" class="link-btn" data-panel="open">Back</button>
+      </form>
+
+      <form id="panel-file-recover" class="lock-panel hidden" novalidate>
+        <h2>Reset the file password</h2>
+        <p id="file-recover-name" class="muted small"></p>
+        <label class="field-label">Recovery key
+          <input id="file-recover-key" type="text" autocomplete="off" spellcheck="false" placeholder="XXXXXXXX-XXXXXXXX-…" />
+        </label>
+        <label class="field-label">New password
+          <input id="file-recover-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field-label">Confirm new password
+          <input id="file-recover-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Reset password and open</button>
+        <button type="button" class="link-btn" data-panel="open">Back</button>
+      </form>
     </div>
   </div>
 
@@ -220,14 +288,54 @@
         <button id="btn-save-profile" class="action-btn">Save name</button>
       </div>
 
-      <h4 class="section-title">Account</h4>
-      <p class="small">Signed in as <strong id="settings-account"></strong>. Notes are saved to your account automatically and are encrypted before they leave this browser.</p>
+      <h4 class="section-title"><span class="web-only">Account</span><span class="desktop-only">Vault file</span></h4>
+      <p class="small web-only">Signed in as <strong id="settings-account"></strong>. Notes are saved to your account automatically and are encrypted before they leave this browser.</p>
+      <p class="small desktop-only">Open file: <strong id="settings-file-path" class="file-path"></strong>. Every change is encrypted and saved to this file as you type.</p>
+      <div class="desktop-only">
+        <label class="check"><input id="input-file-assoc" type="checkbox" /> Open .cherrion files with Cherrion when double-clicked in File Explorer</label>
+        <p id="file-assoc-hint" class="muted small hidden"></p>
+      </div>
       <div class="field-label">
-        Log out automatically
+        <span class="web-only">Log out automatically</span><span class="desktop-only">Lock automatically</span>
         <div id="select-auto-lock"></div>
       </div>
       <div class="modal-actions">
         <button id="btn-save-settings" class="primary-btn">Save</button>
+      </div>
+
+      <div class="desktop-only">
+        <h4 class="section-title">Online sync</h4>
+        <div id="sync-linked" class="hidden">
+          <p class="small">Synced with the account <strong id="sync-linked-user"></strong> on <span id="sync-linked-url" class="file-path"></span>.</p>
+          <div class="modal-actions">
+            <button type="button" id="btn-sync-now" class="action-btn">↻ Sync now</button>
+            <button type="button" id="btn-sync-unlink" class="action-btn">Stop syncing this file</button>
+          </div>
+        </div>
+        <p id="sync-denied" class="notice warn hidden"></p>
+        <form id="form-sync" novalidate>
+          <p id="sync-intro" class="muted small">Link this file to an online account (the web version) to use the same notes on your other devices. The file keeps working offline, and changes sync when you are back online.</p>
+          <label id="sync-url-wrap" class="field-label">Sync server
+            <input id="sync-url" type="text" autocomplete="url" spellcheck="false" autocapitalize="none" />
+          </label>
+          <label id="sync-user-wrap" class="field-label">Username
+            <input id="sync-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
+          </label>
+          <label class="field-label">Password
+            <input id="sync-password" type="password" autocomplete="current-password" />
+          </label>
+          <p id="sync-password-hint" class="muted small">To link: your online account’s password. To create an account: this file’s password, which the account will use.</p>
+          <p id="sync-error" class="form-error hidden" role="alert"></p>
+          <div class="modal-actions">
+            <button type="submit" id="btn-sync-link" class="action-btn">Link to my account</button>
+            <button type="button" id="btn-sync-create" class="action-btn">Create an account from this file</button>
+          </div>
+        </form>
+        <div id="sync-recovery-output" class="hidden">
+          <p class="muted small">Your online account was created. This is its recovery key (the file’s old recovery key no longer works). Save it somewhere safe.</p>
+          <code id="sync-recovery-key" class="recovery-key"></code>
+          <button type="button" id="btn-copy-sync-recovery" class="action-btn">📋 Copy</button>
+        </div>
       </div>
 
       <h4 class="section-title">Backup</h4>
