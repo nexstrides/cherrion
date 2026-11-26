@@ -4,6 +4,7 @@ import { startBridge } from './desktop/bridge';
 import { DESKTOP } from './platform';
 import { settings } from './settings';
 import { wireApp } from './ui/app';
+import { hydrateIcons } from './ui/dom';
 import { showDesktopStart, wireDesktop } from './ui/desktop';
 import { showFatal, showLockScreen, wireLockScreen } from './ui/lock';
 
@@ -13,6 +14,7 @@ const LOOPBACK_ALIASES = new Set(['127.0.0.1', '[::1]']);
 
 async function boot(): Promise<void> {
   document.body.classList.toggle('dark', settings.dark);
+  hydrateIcons();
   wireApp();
   if (DESKTOP) {
     // WebView2 lists Document Picture-in-Picture but refuses to open it, so no floating stickies here yet.

@@ -16,7 +16,7 @@ import {
 } from '../vault';
 import { clearAppDom, rememberUserName, renderAll } from './app';
 import { confirmDialog } from './dialog';
-import { $, $input, download, nextPaint, toast } from './dom';
+import { $, $input, download, nextPaint, setWorking, toast } from './dom';
 import { clearClipboardNow } from './editor';
 import { idleFor, markActivity, selectNote, shell, ui } from './state';
 import { closeAllPopouts } from './stickies';
@@ -44,9 +44,8 @@ export function setError(form: HTMLElement, message: string): void {
 export async function busy(form: HTMLFormElement, work: () => Promise<void>): Promise<void> {
   const buttons = [...form.querySelectorAll('button')];
   const submit = form.querySelector<HTMLButtonElement>('button[type=submit]');
-  const label = submit?.textContent ?? '';
   buttons.forEach(b => (b.disabled = true));
-  if (submit) submit.textContent = 'Working…';
+  const restore = submit ? setWorking(submit) : () => {};
   form.querySelector('.form-error')?.classList.add('hidden');
   try {
     await nextPaint();
@@ -55,7 +54,7 @@ export async function busy(form: HTMLFormElement, work: () => Promise<void>): Pr
     setError(form, err instanceof Error ? err.message : String(err));
   } finally {
     buttons.forEach(b => (b.disabled = false));
-    if (submit) submit.textContent = label;
+    restore();
   }
 }
 

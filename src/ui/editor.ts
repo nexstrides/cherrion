@@ -1,7 +1,7 @@
 // Block editor. Typing only mutates the model and calls store.touchNote (no re-render, so the
 // cursor survives); structural edits re-render and then restore focus with focusBlock/focusField.
 import {
-  CATEGORY_IDS, field, fieldsBlock, isSecretKind, isTextBlock, SECRET_MASK, STICKY_COLORS, textBlock, uid,
+  CATEGORY_IDS, field, fieldsBlock, isSecretKind, isTextBlock, SECRET_MASK, STICKY_COLORS, tableBlock, textBlock, uid,
   type Block, type CategoryId, type Field, type FieldKind, type FieldsBlock, type Note, type PageBlock,
   type StickyColor, type TextBlock, type TextBlockType,
 } from '../model';
@@ -13,9 +13,10 @@ import { createDropdown, createMenuButton, mountDropdown, type Dropdown } from '
 import { parseTotp, secondsRemaining, totpCode, type TotpParams } from '../totp';
 import { openTemplatePicker } from './picker';
 import { render, selectNote, ui } from './state';
+import { focusCell, renderTable } from './tableBlock';
 import { createTotpDisplay } from './totpWidget';
 
-type SlashType = TextBlockType | 'divider' | 'fields' | 'secret' | 'totp' | 'page';
+type SlashType = TextBlockType | 'divider' | 'fields' | 'secret' | 'totp' | 'page' | 'table';
 interface SlashCommand { type: SlashType; label: string; icon: string; hint: string }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -27,6 +28,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { type: 'callout', label: 'Callout', icon: '💡', hint: 'Highlighted note' },
   { type: 'quote', label: 'Quote', icon: '❝', hint: 'Blockquote' },
   { type: 'code', label: 'Code Block', icon: '<>', hint: 'Monospace snippet' },
+  { type: 'table', label: 'Table', icon: '▦', hint: 'Rows and columns' },
   { type: 'divider', label: 'Divider', icon: '―', hint: 'Horizontal line' },
   { type: 'fields', label: 'Field group', icon: '▤', hint: 'Labelled inputs' },
   { type: 'secret', label: 'Secret field', icon: '🔒', hint: 'Hidden value with copy' },
@@ -206,7 +208,16 @@ function renderBlock(note: Note, block: Block): HTMLElement {
   if (block.type === 'divider') body.append(el('hr', { className: 'block-divider' }));
   else if (block.type === 'fields') renderFields(note, block, body);
   else if (block.type === 'page') renderPageLink(block, body);
-  else renderTextBlock(note, block, row, body);
+  else if (block.type === 'table') {
+    renderTable(note, block, body, {
+      rerender: renderEditor,
+      leave: dir => {
+        const next = note.blocks[indexOf(note, block.id) + dir];
+        if (next) focusBlock(next.id, dir < 0);
+        else if (dir > 0) addBlockAtEnd(note);
+      },
+    });
+  } else renderTextBlock(note, block, row, body);
 
   row.append(ctrls, body);
   return row;
@@ -434,6 +445,10 @@ async function confirmRemoveBlock(note: Note, block: Block): Promise<void> {
         : 'The link to the deleted page is removed.',
       confirmLabel: 'Remove',
     };
+  } else if (block.type === 'table') {
+    if (block.rows.some(r => r.some(c => c.trim()))) {
+      question = { title: 'Delete table?', message: `The table (${block.rows.length} × ${block.rows[0]?.length ?? 0}) and its text will be deleted.` };
+    }
   } else if (block.type !== 'divider' && block.content.trim()) {
     question = { title: 'Delete block?', message: 'This block and its text will be deleted.' };
   }
@@ -580,7 +595,7 @@ const SELECTABLE = new Set(['text', 'password', 'url', 'tel', 'search']);
 export function focusBlock(blockId: string, atEnd = false): void {
   requestAnimationFrame(() => {
     const row = document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
-    const targets = row?.querySelectorAll<HTMLElement>('.block-input, .fg-input, .secret-mask, .page-link');
+    const targets = row?.querySelectorAll<HTMLElement>('.block-input, .fg-input, .secret-mask, .page-link, .table-cell');
     const target = targets && (atEnd ? targets[targets.length - 1] : targets[0]);
     if (!target) return;
     target.focus();
@@ -666,6 +681,16 @@ function applySlashCommand(note: Note, block: TextBlock, type: SlashType): void 
         store.touchNote(parent);
       },
     });
+    return;
+  }
+  if (type === 'table') {
+    const table = tableBlock();
+    replaceBlock(note, block.id, table);
+    // Keep somewhere to type after the table.
+    if (note.blocks[note.blocks.length - 1]?.id === table.id) note.blocks.push(textBlock());
+    store.touchNote(note);
+    renderEditor();
+    focusCell(table.id, { r: 0, c: 0 });
     return;
   }
   if (type === 'fields' || type === 'secret' || type === 'totp') {

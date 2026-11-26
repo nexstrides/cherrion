@@ -109,8 +109,15 @@ class RemoteTest(unittest.TestCase):
         with self.assertRaises(RemoteError):
             post('https://example.com', '../admin', '{}')
 
-    def test_unreachable_server_is_status_zero(self) -> None:
-        self.assertEqual(post('http://127.0.0.1:9', 'status', '{}')['status'], 0)
+    def test_unreachable_server_is_status_zero_with_a_reason(self) -> None:
+        res = post('http://127.0.0.1:9', 'status', '{}')
+        self.assertEqual(res['status'], 0)
+        self.assertIn('Cannot reach 127.0.0.1:9', res['data']['error'])
+
+    def test_unknown_host_says_why(self) -> None:
+        res = post('https://cherrion-test.invalid', 'status', '{}')
+        self.assertEqual(res['status'], 0)
+        self.assertIn('could not be looked up', res['data']['error'])
 
 
 if __name__ == '__main__':

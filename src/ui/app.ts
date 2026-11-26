@@ -11,7 +11,7 @@ import { CATEGORIES } from '../templates';
 import { buildTree, compareSiblings, countDescendants, keyboardMove, planMove, type MoveChange } from '../tree';
 import { normalizeUserName, passwordProblem, WrongSecretError } from '../vault';
 import { closeDialog, confirmDialog, wireDialog } from './dialog';
-import { $, $input, autoResize, download, el, nextPaint, toast } from './dom';
+import { $, $input, autoResize, download, el, nextPaint, setWorking, toast } from './dom';
 import { attachMenu, closeDropdowns, mountDropdown, type Dropdown } from './dropdown';
 import { addBlockAtEnd, closeSlashMenu, currentNote, focusBlock, renderBreadcrumbs, renderEditor } from './editor';
 import { closeTemplatePicker, openTemplatePicker, wireTemplatePicker } from './picker';
@@ -195,7 +195,12 @@ function desktopStatus(s: sync.SyncState, unsynced: number): { text: string; kin
   const saved = `Saved in ${file}.`;
   if (remote.kind === 'denied') return { text: 'Sync paused', kind: 'err', title: remote.message };
   if (!navigator.onLine || remote.kind === 'offline' || s.kind === 'offline') {
-    return { text: unsynced ? `Offline · ${unsynced} to sync` : 'Offline · saved', kind: 'offline', title: `${saved} Changes sync when you are back online.` };
+    const why = (remote.kind === 'offline' && remote.message) || (s.kind === 'offline' && s.message) || '';
+    return {
+      text: unsynced ? `Offline · ${unsynced} to sync` : 'Offline · saved',
+      kind: 'offline',
+      title: `${saved} Changes sync when the server can be reached.${why ? ` ${why}` : ''}`,
+    };
   }
   if (remote.kind === 'connecting' || s.kind === 'syncing') return { text: 'Syncing…', kind: 'syncing', title: saved };
   if (s.kind === 'error') return { text: 'Sync error', kind: 'err', title: s.message };
@@ -327,10 +332,9 @@ function securityError(message: string): void {
 }
 
 async function runSecurityAction(button: HTMLButtonElement, work: () => Promise<void>): Promise<void> {
-  const label = button.textContent;
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('#form-security button')];
   buttons.forEach(b => (b.disabled = true));
-  button.textContent = 'Working…';
+  const restore = setWorking(button);
   $('security-error').classList.add('hidden');
   try {
     await nextPaint();
@@ -339,7 +343,7 @@ async function runSecurityAction(button: HTMLButtonElement, work: () => Promise<
     securityError(err instanceof WrongSecretError ? 'Your current password is wrong.' : err instanceof Error ? err.message : String(err));
   } finally {
     buttons.forEach(b => (b.disabled = false));
-    button.textContent = label;
+    restore();
   }
 }
 
@@ -454,7 +458,7 @@ export function wireApp(): void {
   mountDropdown('category-filter', {
     className: 'dd-block',
     ariaLabel: 'Filter by category',
-    options: [{ value: 'all', label: 'All categories', icon: '🗂' }, ...CATEGORY_IDS.map(id => ({ value: id, label: CATEGORIES[id].label, icon: CATEGORIES[id].icon }))],
+    options: [{ value: 'all', label: 'All categories', svg: 'layers' }, ...CATEGORY_IDS.map(id => ({ value: id, label: CATEGORIES[id].label, icon: CATEGORIES[id].icon }))],
     value: 'all',
     onChange: v => { ui.category = v as CategoryId | 'all'; renderTree(); },
   });

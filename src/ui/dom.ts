@@ -29,6 +29,46 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 /** Box-with-arrow "open in new window" icon (same drawing as the toolbar Pop-Out button). */
 export const POPOUT_ICON = 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5';
 
+/** Stroke icons (24×24, drawn with currentColor). In HTML: <span data-icon="name"></span>, see hydrateIcons. */
+export const ICONS = {
+  chevron: 'M6 9l6 6 6-6',
+  check: 'M20 6 9 17l-5-5',
+  subPage: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M12 11v6M9 14h6',
+  edit: 'M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z',
+  unpin: 'M12 17v5M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h12M15 9.34V6a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89M2 2l20 20',
+  download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
+  upload: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12',
+  copy: 'M9 9h11v11H9zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1',
+  refresh: 'M21 12a9 9 0 1 1-2.64-6.36L21 8M21 3v5h-5',
+  link: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
+  unlink: 'M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71M5.17 11.75l-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71M8 2v3M2 8h3M16 22v-3M22 16h-3',
+  userPlus: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM19 8v6M22 11h-6',
+  lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
+  key: 'M2.5 21.5l9.6-9.6M16 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM6 18l2 2M9 15l2 2',
+  layers: 'M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
+  rowAdd: 'M3 3h18v11H3zM3 8.5h18M9 3v11M15 3v11M12 17v5M9.5 19.5h5',
+  colAdd: 'M3 3h11v18H3zM3 9h11M3 15h11M8.5 3v18M19.5 9v6M16.5 12h6',
+} as const;
+export type IconName = keyof typeof ICONS;
+
+/** Replaces each <span data-icon="name"> placeholder in the page with its SVG (keeps its other classes). */
+export function hydrateIcons(root: ParentNode = document): void {
+  for (const slot of root.querySelectorAll<HTMLElement>('[data-icon]')) {
+    const name = slot.dataset.icon as IconName;
+    if (!(name in ICONS)) continue;
+    const svg = svgIcon(ICONS[name]);
+    for (const c of slot.classList) svg.classList.add(c);
+    slot.replaceWith(svg);
+  }
+}
+
+/** Shows "Working…" on a button while keeping its icon and label to put back afterwards. */
+export function setWorking(button: HTMLButtonElement, text = 'Working…'): () => void {
+  const original = [...button.childNodes];
+  button.textContent = text;
+  return () => button.replaceChildren(...original);
+}
+
 /** Stroke icon drawn with currentColor (styled by the .icon class). */
 export function svgIcon(path: string): SVGSVGElement {
   const ns = 'http://www.w3.org/2000/svg';

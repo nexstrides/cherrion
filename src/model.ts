@@ -25,7 +25,11 @@ export interface FieldsBlock { id: string; type: 'fields'; fields: Field[] }
 /** Link to another note (created with the "/page" command). */
 export interface PageBlock { id: string; type: 'page'; pageId: string }
 
-export type Block = TextBlock | DividerBlock | FieldsBlock | PageBlock;
+/** A grid of plain-text cells. `rows` is rectangular; with `header`, the first row is the header. */
+export interface TableBlock { id: string; type: 'table'; header: boolean; rows: string[][] }
+export const TABLE_LIMITS = { rows: 200, cols: 20, cell: 10_000 } as const;
+
+export type Block = TextBlock | DividerBlock | FieldsBlock | PageBlock | TableBlock;
 
 export const CATEGORY_IDS = ['note', 'email', 'login', 'secure', 'meeting'] as const;
 export type CategoryId = (typeof CATEGORY_IDS)[number];
@@ -71,6 +75,10 @@ export function fieldsBlock(fields: Field[]): FieldsBlock {
   return { id: uid(), type: 'fields', fields };
 }
 
+export function tableBlock(rows = 3, cols = 3): TableBlock {
+  return { id: uid(), type: 'table', header: true, rows: Array.from({ length: rows }, () => Array<string>(cols).fill('')) };
+}
+
 export const SECRET_MASK = '••••••••';
 
 /** Lower-cased text used by sidebar search. Secret field values are deliberately excluded. */
@@ -78,6 +86,7 @@ export function searchableText(note: Note): string {
   const parts = [note.title];
   for (const b of note.blocks) {
     if (isTextBlock(b)) parts.push(b.content);
+    else if (b.type === 'table') parts.push(...b.rows.flat());
     else if (b.type === 'fields') {
       for (const f of b.fields) {
         parts.push(f.label);
@@ -94,7 +103,9 @@ export function noteToPlainText(note: Note, titleOf: (id: string) => string | un
   for (const b of note.blocks) {
     if (b.type === 'divider') lines.push('———');
     else if (b.type === 'page') lines.push(`📄 ${titleOf(b.pageId) || 'Untitled'}`);
-    else if (b.type === 'fields') {
+    else if (b.type === 'table') {
+      for (const row of b.rows) lines.push(`| ${row.map(c => c.replace(/\s*\n\s*/g, ' ')).join(' | ')} |`);
+    } else if (b.type === 'fields') {
       for (const f of b.fields) {
         if (!f.value) continue;
         lines.push(`${f.label || 'Field'}: ${isSecretKind(f.kind) ? SECRET_MASK : f.value}`);
@@ -149,6 +160,13 @@ export function normalizeBlock(raw: unknown): Block | null {
   if (raw.type === 'fields') {
     const fields = Array.isArray(raw.fields) ? raw.fields.map(normalizeField).filter((f): f is Field => f !== null) : [];
     return { id, type: 'fields', fields };
+  }
+  if (raw.type === 'table') {
+    const rows = (Array.isArray(raw.rows) ? raw.rows : []).filter(Array.isArray).slice(0, TABLE_LIMITS.rows)
+      .map(r => (r as unknown[]).slice(0, TABLE_LIMITS.cols).map(c => str(c).slice(0, TABLE_LIMITS.cell)));
+    const cols = Math.max(1, ...rows.map(r => r.length));
+    const grid = rows.length ? rows.map(r => [...r, ...Array<string>(cols - r.length).fill('')]) : [['']];
+    return { id, type: 'table', header: raw.header === true, rows: grid };
   }
   if (oneOf(TEXT_BLOCK_TYPES, raw.type)) {
     const b: TextBlock = { id, type: raw.type, content: str(raw.content) };

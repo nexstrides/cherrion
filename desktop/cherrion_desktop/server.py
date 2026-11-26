@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import functools
 import http.server
+import socket
 import threading
 from pathlib import Path
 
@@ -22,11 +23,10 @@ _TYPES = {
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = _TYPES
-    allowed_hosts: set[str] = set()
 
     def do_GET(self) -> None:  # noqa: N802 - http.server naming
         # Only answer for our own origin (blocks DNS-rebinding pages from reading the files).
-        if self.headers.get('Host', '') not in self.allowed_hosts:
+        if self.headers.get('Host', '') not in getattr(self.server, 'allowed_hosts', ()):
             self.send_error(403)
             return
         super().do_GET()
@@ -44,17 +44,29 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class _ExclusiveServer(http.server.ThreadingHTTPServer):
+    """Owns its port alone. http.server turns on SO_REUSEADDR, which on Windows lets a second process
+    bind the same port and take its connections: another Cherrion window (possibly an older version)
+    would then serve this window's page, or another program could show a fake unlock screen."""
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def serve(root: Path) -> str:
     """Starts the server in a background thread and returns its URL."""
     last_error: OSError | None = None
     for port in PORTS:
         handler = functools.partial(_Handler, directory=str(root))
         try:
-            httpd = http.server.ThreadingHTTPServer(('127.0.0.1', port), handler)
+            httpd = _ExclusiveServer(('127.0.0.1', port), handler)
         except OSError as err:
             last_error = err
             continue
-        _Handler.allowed_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
+        httpd.allowed_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}  # type: ignore[attr-defined]
         threading.Thread(target=httpd.serve_forever, name='cherrion-static', daemon=True).start()
         return f'http://127.0.0.1:{port}/'
     raise OSError(f'No free port for the Cherrion window ({last_error}).')

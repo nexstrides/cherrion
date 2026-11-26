@@ -5,18 +5,19 @@
 // the key-wrapped header. Notes stay "dirty" in the file until the sync server has stored them, so
 // edits made offline survive restarts and are uploaded later.
 import { ApiError, api, hasSession, setSession, setTransport } from '../api';
-import { wipe } from '../crypto';
-import { isEnvelope, type Envelope } from '../envelope';
+import { DEFAULT_KDF_COST, wipe } from '../crypto';
+import { encryptNote, isEnvelope, type Envelope } from '../envelope';
+import type { Note } from '../model';
 import * as store from '../store';
 import * as sync from '../sync';
-import { authKeyFromKek, deriveKek, isVaultHeader, recoveryAuthKey, unlockWithKek, type VaultHeader } from '../vault';
+import { authKeyFromKek, createVault, deriveKek, isVaultHeader, recoveryAuthKey, unlockWithKek, type VaultHeader } from '../vault';
 import { py, type FileChanges, type FileSync } from './bridge';
 
 export type RemoteState =
   | { kind: 'local' } // not linked to an account
   | { kind: 'connecting' }
   | { kind: 'connected' }
-  | { kind: 'offline' }
+  | { kind: 'offline'; message?: string }
   | { kind: 'denied'; message: string };
 
 export interface Link { url: string; username: string }
@@ -160,7 +161,7 @@ export function connect(): Promise<void> {
         authKey = null;
         remote = { kind: 'denied', message: 'The online account did not accept this file’s password. If the password was changed on another device, log in again in Settings → Online sync.' };
       } else if (err instanceof ApiError && err.status === 0) {
-        remote = { kind: 'offline' };
+        remote = { kind: 'offline', message: err.message };
       } else {
         remote = { kind: 'denied', message: message(err) };
       }
@@ -302,10 +303,59 @@ export async function unlink(): Promise<void> {
   changed();
 }
 
+/**
+ * New user on the desktop: creates the online account and a vault file linked to it in one step,
+ * then opens it (signed in and syncing). Returns the recovery key to show once.
+ */
+export async function createOnlineAccount(urlText: string, username: string, password: string, userName: string, savePath: string, starter: Note[]): Promise<string> {
+  const url = normalizeServerUrl(urlText);
+  const v = createVault(password, DEFAULT_KDF_COST, { userName });
+  const notes = starter.map(n => encryptNote(v.vaultKey, n));
+  server = url;
+  let signedUp = false;
+  try {
+    const session = await api.signup({ username, header: v.header, authKey: v.authKey, recoveryAuthKey: v.recoveryAuthKey, notes });
+    signedUp = true;
+    setSession(session.token);
+    let created: string;
+    try {
+      created = await createFile(savePath, v.header, notes, { url, username, since: 0 });
+    } catch (err) {
+      throw new Error(`Your account “${username}” was created, but the file could not be saved: ${message(err)} Choose “I already have an account” to download it into another file.`);
+    }
+    sync.stopSync();
+    store.unlock(v.header, v.vaultKey, notes);
+    attach(created, { url, username, since: 0 }, v.authKey);
+    return v.recoveryKey;
+  } catch (err) {
+    if (hasSession()) await api.logout();
+    setSession(null);
+    wipe(v.authKey);
+    wipe(v.vaultKey);
+    server = null;
+    if (!signedUp && err instanceof ApiError && err.status === 409) {
+      throw new Error(`${err.message} If it is yours, choose “I already have an account”.`);
+    }
+    throw err;
+  } finally {
+    wipe(v.recoveryAuthKey);
+  }
+}
+
 /** Downloads an account into a new vault file and opens it (signed in and syncing). */
 export async function downloadAccount(urlText: string, username: string, password: string, savePath: string): Promise<{ header: VaultHeader; vaultKey: Uint8Array; notes: Envelope[] }> {
   const url = normalizeServerUrl(urlText);
-  const { session, kek, key } = await login(url, username, password);
+  let signedIn: Awaited<ReturnType<typeof login>>;
+  try {
+    signedIn = await login(url, username, password);
+  } catch (err) {
+    server = null;
+    if (err instanceof ApiError && err.status === 401) {
+      throw new Error(`${err.message} New to Cherrion? Choose “Create a new account”.`);
+    }
+    throw err;
+  }
+  const { session, kek, key } = signedIn;
   try {
     const vaultKey = unlockWithKek(session.header, kek);
     setSession(session.token);

@@ -46,7 +46,12 @@ Below is the **complete, structured project documentation** formatted so you can
 * Cascading soft-delete for parent notes and their child sub-notes.
 
 ### B. Notion-Style Block Editor (`src/ui/editor.ts`)
-* **Supported Block Types:** Paragraph (`p`), Heading 1 (`h1`), Heading 2 (`h2`), To-do Checkbox (`todo`), Callout (`callout`), Quote (`quote`), Code Block (`code`), Divider (`divider`), and Field group (`fields`, including secret fields).
+* **Supported Block Types:** Paragraph (`p`), Heading 1 (`h1`), Heading 2 (`h2`), To-do Checkbox (`todo`), Callout (`callout`), Quote (`quote`), Code Block (`code`), Divider (`divider`), Field group (`fields`, including secret fields), Page link (`page`) and Table (`table`).
+* **Tables (`/table`):**
+  * A grid with an optional header row.
+  * **Tab** / **Shift+Tab** move between cells, **Enter** moves down, and Tab in the last cell adds a row.
+  * Hover the table for **Row**, **Column** and **⋯** (insert above/below/left/right, delete row or column, toggle the header row).
+  * Table text is searchable and shows on sticky cards.
 * **Slash Command Menu (`/`):** Typing `/` opens a filterable command menu navigable via `ArrowUp`, `ArrowDown`, `Enter`, `Escape`, or mouse click.
 * **Markdown Shortcuts:** Auto-converts `# `, `## `, `[] ` / `[ ] `, `> `, ```` ```  ````, and `---` into structured blocks.
 * **Keyboard & Hover Controls:** `Enter` creates a block below, `Backspace` on an empty block removes/resets it, `ArrowUp`/`ArrowDown` moves between blocks, plus hover buttons (`↑`, `↓`, `✕`) to reorder or delete blocks.
@@ -123,7 +128,10 @@ Below is the **complete, structured project documentation** formatted so you can
 **Use it:** download `Cherrion.exe` from the GitHub **Releases** page and run it. No installation is needed.
 1. **Create a new vault file**: choose your name, a password, and where to save the `.cherrion` file. Save the recovery key it shows.
 2. **Open a vault file**: pick a recent file (or browse) and enter its password. This works offline.
-3. **Get my online account on this PC**: downloads your web account into a new file that keeps syncing. It opens with your account password.
+3. **Sync with an online account**:
+   - *I already have an account* downloads your web account into a new file that keeps syncing. It opens with your account password.
+   - *Create a new account* signs you up and creates the synced file in one step. Use the same username and password on the website or another PC.
+   - If the server can't be reached, the message names the server and the cause (name lookup, refused connection, timeout, or a proxy/antivirus breaking HTTPS).
 4. **Sync an existing file**: ⚙ Settings → **Online sync** → *Link to my account* (same vault) or *Create an account from this file*. Changes made offline are kept in the file and uploaded when you are back online.
 5. 🔒 locks the file (wipes the key and decrypted notes from memory); it also locks after the auto-lock time.
 6. **Double-click to open:** ⚙ Settings → Vault file → *Open .cherrion files with Cherrion*. After that, double-clicking a `.cherrion` file in File Explorer opens Cherrion with that file ready for its password, like `.ctb` files in CherryTree. It's registered for your Windows user only (no admin rights) and follows `Cherrion.exe` if you move it.

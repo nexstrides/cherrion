@@ -61,6 +61,21 @@ function renderRecent(): void {
   }));
 }
 
+const onlineMode = (): 'login' | 'signup' =>
+  ($('online-mode').querySelector<HTMLInputElement>('input:checked')?.value === 'signup' ? 'signup' : 'login');
+
+/** "Sync with an online account": log in to an existing account, or create one. */
+function updateOnlineMode(): void {
+  const signup = onlineMode() === 'signup';
+  $('online-name-wrap').classList.toggle('hidden', !signup);
+  $('online-confirm-wrap').classList.toggle('hidden', !signup);
+  $input('download-password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('online-intro').textContent = signup
+    ? 'Creates your online account and a vault file on this PC that stays in sync with it. Use the same username and password on the website or another PC. Your notes are encrypted on this PC before they are uploaded.'
+    : 'Downloads your encrypted notes into a new vault file on this PC and keeps it in sync. The file opens with your account password, also when you are offline.';
+  if (signup && !$input('online-name').value) $input('online-name').value = settings.userName;
+}
+
 /** Opens the chosen file and checks the password locally (no network needed). */
 async function unlockSelected(password: string): Promise<void> {
   if (!selected) throw new Error('Choose a vault file first.');
@@ -101,8 +116,13 @@ function wireStartScreen(): void {
   };
   $('link-download-account').onclick = () => {
     if (!$input('download-url').value) $input('download-url').value = info.defaultSyncUrl;
+    updateOnlineMode();
     showPanel('download');
   };
+  $('online-mode').addEventListener('change', () => {
+    updateOnlineMode();
+    $('panel-download').querySelector('.form-error')?.classList.add('hidden');
+  });
   $('link-file-recover').onclick = () => {
     const form = $('panel-open') as HTMLFormElement;
     if (!selected) { setError(form, 'Choose the vault file first.'); return; }
@@ -143,15 +163,29 @@ function wireStartScreen(): void {
   });
 
   onSubmit('panel-download', form => {
+    const signup = onlineMode() === 'signup';
     const account = username(form, 'download-username');
     const password = $input('download-password').value;
     if (!account) return;
     let url: string;
     try { url = session.normalizeServerUrl($input('download-url').value); } catch (err) { setError(form, (err as Error).message); return; }
-    if (!password) { setError(form, 'Enter your account password.'); return; }
+    const name = normalizeUserName($input('online-name').value) || account;
+    if (signup) {
+      if (!checkNewPassword(form, password, $input('online-confirm').value)) return;
+    } else if (!password) {
+      setError(form, 'Enter your account password.');
+      return;
+    }
     void busy(form, async () => {
-      const target = await py('pick_save', account);
+      const target = await py('pick_save', signup ? `${name} notes` : account);
       if (!target) return;
+      if (signup) {
+        const recoveryKey = await session.createOnlineAccount(url, account, password, name, target, welcomeNotes());
+        selected = session.filePath();
+        $('recovery-key-text').textContent = recoveryKey;
+        showPanel('recovery');
+        return;
+      }
       await session.downloadAccount(url, account, password, target);
       selected = session.filePath();
       enterApp();
@@ -238,7 +272,7 @@ function renderSyncSettings(): void {
   $('sync-password-hint').textContent = linked
     ? 'Your online account’s current password. This file will use it from now on.'
     : 'To link: your online account’s password. To create an account: this file’s password, which the account will use.';
-  $('btn-sync-link').textContent = linked ? 'Log in again' : 'Link to my account';
+  $('btn-sync-link').querySelector('.btn-text')!.textContent = linked ? 'Log in again' : 'Link to my account';
   if (!$input('sync-url').value) $input('sync-url').value = info.defaultSyncUrl;
 }
 
@@ -342,7 +376,10 @@ export async function syncNowFromUi(): Promise<void> {
   await sync.syncNow();
   const s = sync.getSyncState();
   const remote = session.remoteState();
-  if (remote.kind === 'offline' || s.kind === 'offline') toast('Offline. Your changes are saved in the file and sync when you reconnect.');
+  if (remote.kind === 'offline' || s.kind === 'offline') {
+    const why = (remote.kind === 'offline' && remote.message) || (s.kind === 'offline' && s.message) || '';
+    toast(`Offline. Your changes are saved in the file and sync when the server can be reached.${why ? ` ${why}` : ''}`, 'info', why ? 10000 : 4500);
+  }
   else if (s.kind === 'error') toast(s.message, 'error', 7000);
   else if (s.kind === 'synced') toast('Up to date.');
 }

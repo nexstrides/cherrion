@@ -3,7 +3,7 @@
 // read-only with secrets masked, so the lossy plain-text round trip can never destroy data.
 import { isPlainTextEditable, noteToPlainText, plainTextToBlocks, STICKY_COLORS, type Note } from '../model';
 import * as store from '../store';
-import { $, el, POPOUT_ICON, svgIcon, toast } from './dom';
+import { $, el, ICONS, POPOUT_ICON, svgIcon, toast } from './dom';
 import { markActivity, render, selectNote, ui } from './state';
 
 const popouts = new Set<Window>();
@@ -49,13 +49,13 @@ function stickyCard(note: Note): HTMLElement {
 
   const foot = el('div', { className: 'sticky-card-foot' },
     el('button', {
-      className: 'sticky-mini', type: 'button', text: 'Open in Editor',
+      className: 'sticky-mini', type: 'button', title: 'Open this page in the editor',
       onclick: () => { selectNote(note.id); ui.activeTab = 'tree'; render.all(); },
-    }),
+    }, svgIcon(ICONS.edit), 'Open'),
     el('button', {
-      className: 'sticky-mini', type: 'button', text: 'Unpin',
+      className: 'sticky-mini sticky-unpin', type: 'button', title: 'Remove from the sticky board (the page is kept)',
       onclick: () => { note.isSticky = false; store.touchNote(note); render.all(); },
-    }),
+    }, svgIcon(ICONS.unpin), 'Unpin'),
   );
 
   return el('div', { className: `sticky-card sticky-${note.stickyColor}` }, head, body, foot);

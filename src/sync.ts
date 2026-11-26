@@ -9,7 +9,7 @@ export type SyncState =
   | { kind: 'idle' }
   | { kind: 'syncing' }
   | { kind: 'synced'; at: number; unreadable: number }
-  | { kind: 'offline'; unsaved: number }
+  | { kind: 'offline'; unsaved: number; message?: string }
   | { kind: 'error'; message: string };
 
 let state: SyncState = { kind: 'idle' };
@@ -81,7 +81,7 @@ async function syncOnce(): Promise<void> {
   } catch (err) {
     if (dirtyHeader) store.markHeaderDirty();
     if (err instanceof ApiError && err.status === 401) { onExpired(err.message); return; }
-    if (err instanceof ApiError && err.status === 0) { setState({ kind: 'offline', unsaved: store.unsavedCount() }); return; }
+    if (err instanceof ApiError && err.status === 0) { setState({ kind: 'offline', unsaved: store.unsavedCount(), message: err.message }); return; }
     setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
   }
 }

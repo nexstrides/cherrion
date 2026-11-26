@@ -1,8 +1,9 @@
 // Custom dropdowns (replacing native <select>) and action menus. Both open one shared,
 // keyboard-navigable listbox popover that is positioned inside the viewport.
-import { el } from './dom';
+import { el, ICONS, svgIcon, type IconName } from './dom';
 
-export interface DropdownOption { value: string; label: string; icon?: string; swatch?: string; danger?: boolean }
+/** `icon` is an emoji; `svg` is a stroke icon from ICONS (sharper, and follows the text colour). */
+export interface DropdownOption { value: string; label: string; icon?: string; svg?: IconName; swatch?: string; danger?: boolean }
 export interface Dropdown { readonly el: HTMLElement; readonly value: string; setValue(value: string): void }
 
 interface DropdownConfig {
@@ -42,7 +43,14 @@ function optionVisual(opt: DropdownOption | undefined): HTMLElement | null {
     s.style.background = opt.swatch;
     return s;
   }
+  if (opt?.svg) return el('span', { className: 'dd-icon dd-svg' }, svgIcon(ICONS[opt.svg]));
   return opt?.icon ? el('span', { className: 'dd-icon', text: opt.icon }) : null;
+}
+
+function caret(): SVGSVGElement {
+  const c = svgIcon(ICONS.chevron);
+  c.classList.add('dd-caret');
+  return c;
 }
 
 /** Opens the shared popover under `trigger`. `selected` is null for action menus. */
@@ -128,7 +136,7 @@ export function createDropdown(cfg: DropdownConfig): Dropdown {
   let value = cfg.value;
   const visual = el('span', { className: 'dd-visual' });
   const label = el('span', { className: 'dd-label' });
-  const trigger = el('button', { type: 'button', className: 'dropdown-trigger' }, visual, label, el('span', { className: 'dd-caret', text: '▾' }));
+  const trigger = el('button', { type: 'button', className: 'dropdown-trigger' }, visual, label, caret());
   const root = el('div', { className: `dropdown ${cfg.className ?? ''}`.trim() }, trigger);
   if (cfg.id) root.id = cfg.id;
 

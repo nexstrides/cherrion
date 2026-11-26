@@ -65,8 +65,8 @@
         <p class="muted">This is the only way back in if you forget your password, and it is shown only once. Keep it somewhere safe and offline, such as a password manager or on paper.</p>
         <code id="recovery-key-text" class="recovery-key"></code>
         <div class="row">
-          <button type="button" id="btn-copy-recovery" class="action-btn">📋 Copy</button>
-          <button type="button" id="btn-download-recovery" class="action-btn">⬇ Save as text file</button>
+          <button type="button" id="btn-copy-recovery" class="action-btn"><span data-icon="copy"></span>Copy</button>
+          <button type="button" id="btn-download-recovery" class="action-btn"><span data-icon="download"></span>Save as text file</button>
         </div>
         <label class="check"><input id="recovery-saved" type="checkbox" /> I saved my recovery key somewhere safe</label>
         <button type="button" id="btn-recovery-continue" class="primary-btn wide" disabled>Open my notes</button>
@@ -109,7 +109,7 @@
         <button type="button" id="link-file-recover" class="link-btn">Forgot the password? Use your recovery key</button>
         <div class="lock-alt">
           <button type="button" id="link-create-file" class="action-btn wide-btn">＋ Create a new vault file</button>
-          <button type="button" id="link-download-account" class="action-btn wide-btn">☁ Get my online account on this PC</button>
+          <button type="button" id="link-download-account" class="action-btn wide-btn">☁ Sync with an online account</button>
         </div>
       </form>
 
@@ -131,16 +131,27 @@
       </form>
 
       <form id="panel-download" class="lock-panel hidden" novalidate>
-        <h2>Get your online account</h2>
-        <p class="muted">Downloads your encrypted notes into a new vault file on this PC and keeps it in sync. The file opens with your account password, also when you are offline.</p>
+        <h2>Sync with an online account</h2>
+        <fieldset id="online-mode" class="start-with">
+          <legend>Online account</legend>
+          <label class="check"><input type="radio" name="online-mode" value="login" checked /> I already have an account</label>
+          <label class="check"><input type="radio" name="online-mode" value="signup" /> Create a new account</label>
+        </fieldset>
+        <p id="online-intro" class="muted small"></p>
         <label class="field-label">Sync server
           <input id="download-url" type="text" autocomplete="url" spellcheck="false" autocapitalize="none" />
         </label>
+        <label id="online-name-wrap" class="field-label hidden">Your name
+          <input id="online-name" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Albert" />
+        </label>
         <label class="field-label">Username
-          <input id="download-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
+          <input id="download-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" />
         </label>
         <label class="field-label">Password
           <input id="download-password" type="password" autocomplete="current-password" />
+        </label>
+        <label id="online-confirm-wrap" class="field-label hidden">Confirm password
+          <input id="online-confirm" type="password" autocomplete="new-password" />
         </label>
         <p class="form-error hidden" role="alert"></p>
         <button type="submit" class="primary-btn wide">Choose where to save…</button>
@@ -197,7 +208,7 @@
             <span id="user-name" class="user-name"></span>
             <span id="sync-status" class="sync-status" role="status">Local only</span>
           </span>
-          <span class="dd-caret" aria-hidden="true">▾</span>
+          <span class="dd-caret" data-icon="chevron"></span>
         </button>
       </div>
     </aside>
@@ -214,7 +225,7 @@
             <div id="sticky-color-select"></div>
           </div>
           <button id="btn-popout" class="action-btn" title="Float as an always-on-top sticky window" aria-label="Pop-Out"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg><span class="btn-label">Pop-Out</span></button>
-          <button id="btn-add-child" class="action-btn" title="Add sub-note" aria-label="Sub-note"><span aria-hidden="true">↳</span><span class="btn-label"> Sub-note</span></button>
+          <button id="btn-add-child" class="action-btn" title="Add a sub-page under this page" aria-label="Sub-note"><span data-icon="subPage"></span><span class="btn-label">Sub-note</span></button>
           <button id="btn-delete-note" class="action-btn danger" title="Delete this page" aria-label="Delete page">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 3h4a1 1 0 0 1 1 1v3H9V4a1 1 0 0 1 1-1zM6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" /></svg><span class="btn-label">Delete</span>
           </button>
@@ -284,8 +295,8 @@
         <input id="input-user-name" type="text" autocomplete="username" maxlength="60" spellcheck="false" />
       </label>
       <p class="muted small">Stored encrypted in your vault and synced to your other devices.</p>
-      <div class="modal-actions">
-        <button id="btn-save-profile" class="action-btn">Save name</button>
+      <div class="modal-actions end">
+        <button id="btn-save-profile" class="primary-btn"><span data-icon="check"></span>Save name</button>
       </div>
 
       <h4 class="section-title"><span class="web-only">Account</span><span class="desktop-only">Vault file</span></h4>
@@ -299,8 +310,8 @@
         <span class="web-only">Log out automatically</span><span class="desktop-only">Lock automatically</span>
         <div id="select-auto-lock"></div>
       </div>
-      <div class="modal-actions">
-        <button id="btn-save-settings" class="primary-btn">Save</button>
+      <div class="modal-actions end">
+        <button id="btn-save-settings" class="primary-btn"><span data-icon="check"></span>Save</button>
       </div>
 
       <div class="desktop-only">
@@ -308,8 +319,8 @@
         <div id="sync-linked" class="hidden">
           <p class="small">Synced with the account <strong id="sync-linked-user"></strong> on <span id="sync-linked-url" class="file-path"></span>.</p>
           <div class="modal-actions">
-            <button type="button" id="btn-sync-now" class="action-btn">↻ Sync now</button>
-            <button type="button" id="btn-sync-unlink" class="action-btn">Stop syncing this file</button>
+            <button type="button" id="btn-sync-now" class="action-btn"><span data-icon="refresh"></span>Sync now</button>
+            <button type="button" id="btn-sync-unlink" class="action-btn"><span data-icon="unlink"></span>Stop syncing this file</button>
           </div>
         </div>
         <p id="sync-denied" class="notice warn hidden"></p>
@@ -327,22 +338,22 @@
           <p id="sync-password-hint" class="muted small">To link: your online account’s password. To create an account: this file’s password, which the account will use.</p>
           <p id="sync-error" class="form-error hidden" role="alert"></p>
           <div class="modal-actions">
-            <button type="submit" id="btn-sync-link" class="action-btn">Link to my account</button>
-            <button type="button" id="btn-sync-create" class="action-btn">Create an account from this file</button>
+            <button type="submit" id="btn-sync-link" class="action-btn"><span data-icon="link"></span><span class="btn-text">Link to my account</span></button>
+            <button type="button" id="btn-sync-create" class="action-btn"><span data-icon="userPlus"></span>Create an account from this file</button>
           </div>
         </form>
         <div id="sync-recovery-output" class="hidden">
           <p class="muted small">Your online account was created. This is its recovery key (the file’s old recovery key no longer works). Save it somewhere safe.</p>
           <code id="sync-recovery-key" class="recovery-key"></code>
-          <button type="button" id="btn-copy-sync-recovery" class="action-btn">📋 Copy</button>
+          <button type="button" id="btn-copy-sync-recovery" class="action-btn"><span data-icon="copy"></span>Copy</button>
         </div>
       </div>
 
       <h4 class="section-title">Backup</h4>
       <div class="modal-actions">
-        <button id="btn-export-json" class="action-btn">⬇ Export encrypted backup</button>
+        <button id="btn-export-json" class="action-btn"><span data-icon="download"></span>Export encrypted backup</button>
         <label class="action-btn file-btn">
-          ⬆ Import backup
+          <span data-icon="upload"></span>Import backup
           <input id="input-import-json" type="file" accept=".json,application/json" hidden />
         </label>
       </div>
@@ -360,14 +371,14 @@
         </label>
         <p id="security-error" class="form-error hidden" role="alert"></p>
         <div class="modal-actions">
-          <button type="submit" id="btn-change-password" class="action-btn">Change password</button>
-          <button type="button" id="btn-new-recovery" class="action-btn" title="Needs only your current password">Create new recovery key</button>
+          <button type="submit" id="btn-change-password" class="action-btn"><span data-icon="lock"></span>Change password</button>
+          <button type="button" id="btn-new-recovery" class="action-btn" title="Needs only your current password"><span data-icon="key"></span>Create new recovery key</button>
         </div>
       </form>
       <div id="new-recovery-output" class="hidden">
         <p class="muted small">Your new recovery key. The old one no longer works.</p>
         <code id="new-recovery-key" class="recovery-key"></code>
-        <button type="button" id="btn-copy-new-recovery" class="action-btn">📋 Copy</button>
+        <button type="button" id="btn-copy-new-recovery" class="action-btn"><span data-icon="copy"></span>Copy</button>
       </div>
     </div>
   </div>

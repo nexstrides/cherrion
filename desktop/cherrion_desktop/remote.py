@@ -68,10 +68,25 @@ def post(base_url: str, endpoint: str, body: str, token: str | None = None) -> d
     except urllib.error.HTTPError as err:
         return {'status': err.code, 'data': _json(err.read())}
     except (urllib.error.URLError, socket.timeout, ConnectionError, ssl.SSLError, OSError) as err:
-        reason = getattr(err, 'reason', err)
-        if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(err, ssl.SSLError):
-            return {'status': 0, 'data': {'error': f'Secure connection to the sync server failed: {reason}'}}
-        return {'status': 0, 'data': {}}
+        return {'status': 0, 'data': {'error': describe_failure(url, err)}}
+
+
+def describe_failure(url: str, err: BaseException) -> str:
+    """A message the user can act on (or pass on): which server, and why it could not be reached."""
+    host = urlsplit(url).netloc
+    reason = getattr(err, 'reason', err)
+    text = str(reason) or type(reason).__name__
+    if isinstance(reason, (ssl.SSLError, ssl.CertificateError)) or isinstance(err, ssl.SSLError):
+        why = f'the secure connection failed ({text}). A proxy, antivirus or firewall that inspects HTTPS can cause this.'
+    elif isinstance(reason, socket.gaierror):
+        why = 'its name could not be looked up. Check the internet connection and the server address.'
+    elif isinstance(reason, (socket.timeout, TimeoutError)) or 'timed out' in text:
+        why = 'it did not answer in time. A slow network, proxy or firewall can cause this.'
+    elif isinstance(reason, ConnectionRefusedError):
+        why = 'the connection was refused. Check the server address, or a firewall blocking Cherrion.'
+    else:
+        why = f'{text}. A proxy or firewall blocking Cherrion can cause this.'
+    return f'Cannot reach {host}: {why}'
 
 
 def _json(raw: bytes) -> dict:
