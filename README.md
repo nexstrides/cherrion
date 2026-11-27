@@ -52,7 +52,7 @@ Below is the **complete, structured project documentation** formatted so you can
   * Each picture is shrunk to at most 1600 px and saved as WebP inside the page, so it is encrypted and synced like the rest of the page. A 5 MB photo typically becomes tens or hundreds of KB.
   * Click a picture to see it full size; add a caption below it (captions are searchable).
   * A page can hold about 2 MB of pictures; put more on sub-pages.
-* **Export / import a page (⋯ in the page toolbar, or right-click in the desktop sidebar):**
+* **Export / import a page (⋯ in the page toolbar, or right-click a page in the sidebar):**
   * **Cherrion page file** (`.cherrion-page`) keeps everything, with or without sub-pages. You can protect it with its own password, which is then asked for on import. Without a password, a warning says the file is readable by anyone.
   * **Markdown** (`.md`) is readable anywhere. Secret values are masked unless you tick "Include secret values".
   * **Import** a page file or any Markdown/text file at the top level or under the current page. Imported pages always get new ids, so nothing existing is overwritten.
@@ -132,8 +132,10 @@ Below is the **complete, structured project documentation** formatted so you can
 2. On any other device, **Log in** with the same username and password.
 3. Forgot the password? **Use your recovery key** on the login screen.
 4. Sessions last 12 hours and are renewed automatically while you work. If that isn't possible (for example, the password was changed on another device), Cherrion asks for your password without logging you out, so nothing is lost.
-5. Offline: keep the tab open. The status shows **Offline · N unsaved** and the changes are saved when you reconnect (closing the tab first asks for confirmation).
-6. Share with others: open the space menu (above the search box) → **New workspace…**, then invite people by username or with an invite link in **Workspace settings…**. Invitations appear in the invitee's space menu with a red badge.
+5. **Right-click menus** work on the website too: right-click a page in the sidebar or a block in a page (same items as the desktop app, plus Cut / Copy / Paste in text). Hold **Shift** for the browser's own menu (spelling suggestions); everywhere else the browser's menu is unchanged.
+6. **Install as an app** (Chrome / Edge): account menu → **Install app**, or the install icon in the address bar. Cherrion then opens in its own window with its own taskbar icon, like the desktop app. Only the page is installed: notes stay online and encrypted.
+7. Offline: keep the tab open. The status shows **Offline · N unsaved** and the changes are saved when you reconnect (closing the tab first asks for confirmation).
+8. Share with others: open the space menu (above the search box) → **New workspace…**, then invite people by username or with an invite link in **Workspace settings…**. Invitations appear in the invitee's space menu with a red badge.
 
 ### Step 5: Use Blocks & Sticky Notes
 1. Click inside any block and type `/` to insert headings, to-dos, callouts, quotes, code, dividers, pages, field groups, secret fields or 2FA codes.

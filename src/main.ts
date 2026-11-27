@@ -18,11 +18,11 @@ async function boot(): Promise<void> {
   document.body.classList.toggle('dark', settings.dark);
   hydrateIcons();
   wireApp();
+  wireContextMenus(); // the tree and page menus (the website keeps the browser's menu elsewhere)
   if (DESKTOP) {
     // WebView2 lists Document Picture-in-Picture but refuses to open it, so no floating stickies here yet.
     document.body.classList.add('desktop', 'no-popout');
     wireDesktop();
-    wireContextMenus();
     await initCrypto();
     await startBridge();
     await showDesktopStart();

@@ -402,6 +402,29 @@ async function syncFromMenu(): Promise<void> {
   else if (s.kind === 'synced') toast('Up to date.');
 }
 
+// ---- Installing the website as an app (Chrome / Edge) ----
+
+/** Chrome and Edge's install offer (not in TypeScript's DOM types). */
+interface InstallPromptEvent extends Event { prompt(): Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
+let installPrompt: InstallPromptEvent | null = null;
+
+function wireInstall(): void {
+  if (DESKTOP) return;
+  window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e as InstallPromptEvent; });
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    toast('Cherrion is installed. Open it from the Start menu, taskbar or dock like any other app.');
+  });
+}
+
+async function installApp(): Promise<void> {
+  const offer = installPrompt;
+  if (!offer) return;
+  installPrompt = null; // an offer can be shown only once
+  await offer.prompt();
+  await offer.userChoice;
+}
+
 function wireUserMenu(): void {
   attachMenu($('btn-user') as HTMLButtonElement, {
     ariaLabel: 'Account menu',
@@ -409,6 +432,7 @@ function wireUserMenu(): void {
       ...(!DESKTOP || session.linkedAccount() ? [{ value: 'sync', label: 'Sync now', icon: '↻' }] : []),
       { value: 'settings', label: 'Settings', icon: '⚙' },
       { value: 'docs', label: 'Documentation', icon: '📖' },
+      ...(installPrompt ? [{ value: 'install', label: 'Install app', svg: 'download' as const }] : []),
       { value: 'theme', label: settings.dark ? 'Light mode' : 'Dark mode', icon: '🌓' },
       { value: 'lock', label: DESKTOP ? 'Lock' : 'Log out', icon: '🔒' },
     ],
@@ -416,6 +440,7 @@ function wireUserMenu(): void {
       if (action === 'sync') void syncFromMenu();
       else if (action === 'settings') openSettings();
       else if (action === 'docs') openDocs();
+      else if (action === 'install') void installApp();
       else if (action === 'theme') { settings.dark = !settings.dark; saveSettings(); renderAll(); }
       else if (action === 'lock') shell.lock();
     },
@@ -699,6 +724,7 @@ export function wireApp(): void {
   $('btn-popout').onclick = () => { if (ui.activeNoteId) void openFloatingSticky(ui.activeNoteId); };
 
   wireUserMenu();
+  wireInstall();
   sync.onSyncState(renderSyncState);
   if (DESKTOP) session.onDesktopChange(() => renderSyncState());
   store.onPersisted(() => { sync.scheduleSync(); renderSyncState(); });

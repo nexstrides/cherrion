@@ -908,6 +908,7 @@ function blockContextMenu(e: MouseEvent): ContextMenu | null {
   const row = (e.target as Element).closest<HTMLElement>('.block-row');
   const block = note && row ? note.blocks.find(b => b.id === row.dataset.blockId) : undefined;
   if (!note || !block) return null;
+  if (store.isReadOnly(store.spaceOf(note.id))) return null; // viewers: only the text menu (Copy)
   const idx = indexOf(note, block.id);
   const { clientX: x, clientY: y } = e;
   const items: DropdownOption[] = [
