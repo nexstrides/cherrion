@@ -124,6 +124,32 @@ export function autoResize(area: HTMLTextAreaElement): void {
  * Saves text as a file. Resolves to where it was saved (desktop), true (browser download started),
  * or null when the person cancelled the save dialog. With `quiet`, the caller reports the result.
  */
+/** Saves binary content (an attached file): the save dialog on desktop, a download on the website. */
+export async function downloadBytes(filename: string, bytes: Uint8Array, type = 'application/octet-stream'): Promise<string | true | null> {
+  if (DESKTOP) {
+    try {
+      const saved = await py('save_bytes', filename, base64Url(bytes));
+      if (saved) toast(`Saved to ${saved}`);
+      return saved;
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), 'error', 7000);
+      return null;
+    }
+  }
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+  const a = el('a', { href: url, download: filename });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+
+/** base64url without padding (what the desktop side decodes). */
+function base64Url(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 export async function download(filename: string, text: string, type = 'application/json', opts: { quiet?: boolean } = {}): Promise<string | true | null> {
   if (DESKTOP) {
     // The desktop window has no download bar: ask where to save with the system dialog.

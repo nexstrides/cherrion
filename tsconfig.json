@@ -1,4 +1,4 @@
-﻿{
+{
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -16,5 +16,5 @@
     "noEmit": true
   },
   "include": ["src", "tests"],
-  "exclude": ["tests/server.test.ts", "tests/pictures.test.ts", "tests/workspaces.test.ts"]
+  "exclude": ["tests/server.test.ts", "tests/pictures.test.ts", "tests/workspaces.test.ts", "tests/files.test.ts"]
 }

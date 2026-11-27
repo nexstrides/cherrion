@@ -20,7 +20,13 @@ export interface DividerBlock { id: string; type: 'divider' }
 /** `totp` holds a 2FA secret key (or otpauth:// link); the editor shows its current 6-digit code. */
 export const FIELD_KINDS = ['text', 'email', 'url', 'tel', 'date', 'password', 'secret-text', 'totp'] as const;
 export type FieldKind = (typeof FIELD_KINDS)[number];
-export interface Field { id: string; label: string; value: string; kind: FieldKind; hint?: string }
+/**
+ * `sv`: in a workspace that hides secret fields from viewers, a secret field's value sealed with the
+ * workspace's secrets key number `s` (`value` is then empty). `locked` (never saved) marks a field
+ * this device cannot open, e.g. for a viewer.
+ */
+export interface SealedValue { s: number; nonce: string; ct: string }
+export interface Field { id: string; label: string; value: string; kind: FieldKind; hint?: string; sv?: SealedValue; locked?: boolean }
 export interface FieldsBlock { id: string; type: 'fields'; fields: Field[] }
 /** Link to another note (created with the "/page" command). */
 export interface PageBlock { id: string; type: 'page'; pageId: string }
@@ -44,13 +50,40 @@ export const IMAGE_LIMITS = {
 } as const;
 export const IMAGE_SRC = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
 
-export type Block = TextBlock | DividerBlock | FieldsBlock | PageBlock | TableBlock | ImageBlock;
+/**
+ * An attached file (PDF, Word, ZIP, text…). Its content is stored outside the page, as encrypted
+ * chunks (on the server, and in the desktop vault file); `key` (inside the encrypted page) opens it.
+ * `size` is in bytes, `chunks` the number of stored pieces, `note` an optional description.
+ */
+export interface FileBlock {
+  id: string; type: 'file'; fileId: string; name: string; size: number; mime: string; chunks: number; key: string; note: string;
+}
+export const FILE_LIMITS = {
+  /** Largest file. */
+  maxBytes: 10 * 1024 * 1024,
+  /** Stored in pieces of this size (the server accepts requests up to 4.5 MB). */
+  chunkBytes: 2 * 1024 * 1024,
+} as const;
+/** Files that can be attached: documents, spreadsheets, slides, text, archives and pictures. Programs and scripts cannot. */
+export const FILE_TYPES = [
+  'pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'md', 'csv', 'json', 'xml', 'log',
+  'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp',
+  'zip', '7z', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'svg',
+  'mp3', 'm4a', 'wav', 'mp4', 'mov',
+  'eml', 'msg', 'ics', 'vcf', 'pem', 'crt', 'key', 'ovpn', 'kdbx',
+] as const;
+export const fileExtension = (name: string): string => /\.([A-Za-z0-9]{1,8})$/.exec(name)?.[1]?.toLowerCase() ?? '';
+const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const FILE_KEY = /^[A-Za-z0-9_-]{43}$/;
+
+export type Block = TextBlock | DividerBlock | FieldsBlock | PageBlock | TableBlock | ImageBlock | FileBlock;
 
 /** Size of the pictures on a page (data: URL characters). */
 export const pictureBytes = (note: Note): number =>
   note.blocks.reduce((n, b) => n + (b.type === 'image' ? b.src.length : 0), 0);
 
-export const CATEGORY_IDS = ['note', 'email', 'login', 'proxy', 'secure', 'meeting'] as const;
+export const CATEGORY_IDS = ['note', 'email', 'login', 'card', 'bank', 'proxy', 'secure', 'meeting'] as const;
 export type CategoryId = (typeof CATEGORY_IDS)[number];
 
 export interface Note {
@@ -107,6 +140,7 @@ export function searchableText(note: Note): string {
     if (isTextBlock(b)) parts.push(b.content);
     else if (b.type === 'table') parts.push(...b.rows.flat());
     else if (b.type === 'image') parts.push(b.caption);
+    else if (b.type === 'file') parts.push(b.name, b.note);
     else if (b.type === 'fields') {
       for (const f of b.fields) {
         parts.push(f.label);
@@ -124,6 +158,7 @@ export function noteToPlainText(note: Note, titleOf: (id: string) => string | un
     if (b.type === 'divider') lines.push('———');
     else if (b.type === 'page') lines.push(`📄 ${titleOf(b.pageId) || 'Untitled'}`);
     else if (b.type === 'image') lines.push(`🖼 ${b.caption || 'Picture'}`);
+    else if (b.type === 'file') lines.push(`📎 ${b.name}${b.note ? ` (${b.note})` : ''}`);
     else if (b.type === 'table') {
       for (const row of b.rows) lines.push(`| ${row.map(c => c.replace(/\s*\n\s*/g, ' ')).join(' | ')} |`);
     } else if (b.type === 'fields') {
@@ -170,6 +205,10 @@ function normalizeField(raw: unknown): Field | null {
     kind: oneOf(FIELD_KINDS, raw.kind) ? raw.kind : 'text',
   };
   if (typeof raw.hint === 'string' && raw.hint) f.hint = raw.hint;
+  const sv = raw.sv;
+  if (isObj(sv) && typeof sv.s === 'number' && Number.isInteger(sv.s) && sv.s >= 1 && typeof sv.nonce === 'string' && typeof sv.ct === 'string') {
+    f.sv = { s: sv.s, nonce: sv.nonce, ct: sv.ct };
+  }
   return f;
 }
 
@@ -187,6 +226,17 @@ export function normalizeBlock(raw: unknown): Block | null {
     if (!IMAGE_SRC.test(src) || src.length > IMAGE_LIMITS.maxSrc) return null;
     const dim = (x: unknown) => (typeof x === 'number' && Number.isInteger(x) && x > 0 && x <= 20_000 ? x : 0);
     return { id, type: 'image', src, width: dim(raw.width), height: dim(raw.height), caption: str(raw.caption).slice(0, 500) };
+  }
+  if (raw.type === 'file') {
+    const name = str(raw.name).replace(/[\\/]/g, '_').slice(0, 255);
+    const size = typeof raw.size === 'number' && Number.isInteger(raw.size) && raw.size >= 0 && raw.size <= FILE_LIMITS.maxBytes ? raw.size : -1;
+    const maxChunks = Math.max(1, Math.ceil(size / FILE_LIMITS.chunkBytes));
+    const chunks = typeof raw.chunks === 'number' && Number.isInteger(raw.chunks) && raw.chunks >= 1 && raw.chunks <= maxChunks ? raw.chunks : 0;
+    if (!name || size < 0 || !chunks || !FILE_ID.test(str(raw.fileId)) || !FILE_KEY.test(str(raw.key))) return null;
+    return {
+      id, type: 'file', fileId: str(raw.fileId), name, size, chunks, key: str(raw.key),
+      mime: str(raw.mime).slice(0, 100), note: str(raw.note).slice(0, 2000),
+    };
   }
   if (raw.type === 'table') {
     const rows = (Array.isArray(raw.rows) ? raw.rows : []).filter(Array.isArray).slice(0, TABLE_LIMITS.rows)

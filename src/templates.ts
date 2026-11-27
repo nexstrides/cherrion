@@ -9,6 +9,8 @@ export const CATEGORIES: Record<CategoryId, Category> = {
   note: { id: 'note', label: 'Note', icon: '📝', titlePlaceholder: 'Untitled note' },
   email: { id: 'email', label: 'Email account', icon: '✉️', titlePlaceholder: 'Account name, e.g. Personal Gmail' },
   login: { id: 'login', label: 'Website login', icon: '🔑', titlePlaceholder: 'Site name, e.g. GitHub' },
+  card: { id: 'card', label: 'Card', icon: '💳', titlePlaceholder: 'Card name, e.g. Visa ending 4242' },
+  bank: { id: 'bank', label: 'Bank account', icon: '🏦', titlePlaceholder: 'Account name, e.g. Chase checking' },
   proxy: { id: 'proxy', label: 'Proxy', icon: '🌐', titlePlaceholder: 'Proxy name, e.g. US residential #1' },
   secure: { id: 'secure', label: 'Secure note', icon: '🔒', titlePlaceholder: 'What is this? e.g. Home Wi-Fi' },
   meeting: { id: 'meeting', label: 'Meeting', icon: '📅', titlePlaceholder: 'Meeting title' },
@@ -73,6 +75,51 @@ export const TEMPLATES: Template[] = [
       ]),
       textBlock('h2', 'Notes'),
       textBlock(),
+    ],
+  },
+  {
+    id: 'card',
+    name: 'Card',
+    description: 'Cardholder, email, type, number, CVC, expiry date, billing address and a note.',
+    category: 'card',
+    // Number and CVC are secret fields: masked, never searched, cleared from the clipboard after 30 s.
+    build: () => [
+      group([
+        ['Cardholder name', 'text', 'As printed on the card'],
+        ['Email', 'email'],
+        ['Card type', 'text', 'e.g. Visa, Mastercard, Amex; credit or debit'],
+        ['Card number', 'password', '1234 5678 9012 3456'],
+        ['CVC', 'password', '3 or 4 digits'],
+        ['Expiry date', 'text', 'MM/YY'],
+        ['Billing address', 'text', 'Street, city, postcode, country'],
+        ['Note', 'text', 'Issuer, limit, PIN location…'],
+      ]),
+    ],
+  },
+  {
+    id: 'bank',
+    name: 'Bank account',
+    description: 'Bank, account holder and type, account / routing numbers, IBAN, SWIFT, PIN and online banking login.',
+    category: 'bank',
+    // The usual bank account details (as in 1Password and Keeper's bank items), plus IBAN / SWIFT for
+    // international transfers and the online banking login. Account number, IBAN, PIN and the online
+    // banking password are secret fields.
+    build: () => [
+      group([
+        ['Bank name', 'text'],
+        ['Account holder', 'text'],
+        ['Account type', 'text', 'e.g. Checking, Savings, Business'],
+        ['Account number', 'password'],
+        ['Routing number / sort code', 'text', 'US routing (ABA), UK sort code, or bank code'],
+        ['IBAN', 'password', 'e.g. GB33 BUKB 2020 1555 5555 55'],
+        ['SWIFT / BIC', 'text', 'e.g. BUKBGB22'],
+        ['PIN', 'password'],
+        ['Online banking username', 'text'],
+        ['Online banking password', 'password'],
+        ['2FA code', 'totp'],
+        ['Branch / phone', 'text', 'Branch address or support phone'],
+        ['Note', 'text'],
+      ]),
     ],
   },
   {

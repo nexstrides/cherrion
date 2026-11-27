@@ -6,6 +6,7 @@ import { isEnvelope, isVaultHeader } from '../../src/shapes.js';
 import type { KdfParams } from '../../src/crypto.js';
 import type { Envelope } from '../../src/envelope.js';
 import type { VaultHeader } from '../../src/vault.js';
+import { memoryFileRepo, type FileRepo } from './files.js';
 import { memoryWorkspaceRepo, type WorkspaceRepo } from './workspaces.js';
 
 export interface Account {
@@ -14,7 +15,7 @@ export interface Account {
   publicKey?: string | null;
 }
 
-export interface Repo extends WorkspaceRepo {
+export interface Repo extends WorkspaceRepo, FileRepo {
   /** False for the in-memory development store (data disappears on restart). */
   readonly persistent: boolean;
   findAccount(username: string): Promise<Account | null>;
@@ -238,6 +239,7 @@ export function createMemoryRepo(): Repo {
   const byId = (id: string) => [...accounts.values()].find(a => a.id === id) ?? null;
   return {
     ...memoryWorkspaceRepo(() => accounts.values(), () => ++rev),
+    ...memoryFileRepo(),
     persistent: false,
     findAccount: async u => accounts.get(u) ?? null,
     findAccountById: async id => byId(id),

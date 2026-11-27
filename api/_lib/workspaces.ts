@@ -2,6 +2,11 @@
 // workspace's encrypted name, its pages as encrypted envelopes, and copies of the workspace key that
 // are sealed to members' public keys (or, for invite links, encrypted with a key only the link holds).
 // It checks who may do what (owner / editor / viewer) but can never read a workspace.
+//
+// Secret fields and viewers: when a workspace's owner turns viewers' access to secret fields off,
+// each key number also gets a separate *secrets key*. Secret field values (passwords, secret notes,
+// 2FA keys) are sealed with it inside the pages, and only owners and editors get it (`skeys`), so
+// viewers cannot read them, not even with the workspace key.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { isEnvelope, isSealed } from '../../src/shapes.js';
 import type { Sealed } from '../../src/crypto.js';
@@ -16,8 +21,10 @@ export type SealedKeys = Record<string, string>;
 /** The workspace name, encrypted with workspace key number `k`. */
 export interface WorkspaceMeta extends Sealed { k: number }
 
-export interface Workspace { id: string; meta: WorkspaceMeta; epoch: number; createdBy: string }
-export interface Member { workspaceId: string; accountId: string; role: Role; keys: SealedKeys }
+/** `viewerSecrets`: false when viewers may not read secret fields (see the note above). */
+export interface Workspace { id: string; meta: WorkspaceMeta; epoch: number; createdBy: string; viewerSecrets: boolean }
+/** `skeys`: secrets keys by key number, sealed to this member (owners and editors only). */
+export interface Member { workspaceId: string; accountId: string; role: Role; keys: SealedKeys; skeys: SealedKeys }
 export interface Invite {
   id: string;
   workspaceId: string;
@@ -28,6 +35,8 @@ export interface Invite {
   payload: SealedKeys | Sealed;
   /** Link invites: SHA-256 of the proof derived from the link secret. */
   authHash: string | null;
+  /** Username invites as editor while secrets are hidden from viewers: the secrets keys. */
+  skeys: SealedKeys | null;
   createdBy: string;
   expiresAt: number;
 }
@@ -37,7 +46,7 @@ export interface WorkspaceRepo {
   setPublicKey(accountId: string, publicKey: string): Promise<string>;
   createWorkspace(ws: Workspace, owner: Member): Promise<void>;
   getWorkspace(id: string): Promise<Workspace | null>;
-  updateWorkspace(id: string, fields: { meta?: WorkspaceMeta; epoch?: number }): Promise<void>;
+  updateWorkspace(id: string, fields: { meta?: WorkspaceMeta; epoch?: number; viewerSecrets?: boolean }): Promise<void>;
   deleteWorkspace(id: string): Promise<void>;
   workspacesOf(accountId: string): Promise<{ workspace: Workspace; member: Member }[]>;
   members(workspaceId: string): Promise<(Member & { username: string; publicKey: string | null })[]>;
@@ -98,6 +107,15 @@ function sealedKeys(value: unknown): SealedKeys {
   return value as SealedKeys;
 }
 
+/** Secrets keys: like sealedKeys, but may be absent or empty. */
+function secretKeys(value: unknown): SealedKeys {
+  if (value === undefined || value === null) return {};
+  if (typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) return {};
+  return sealedKeys(value);
+}
+
+const MISSING_SECRETS = 'Secret fields in this workspace are hidden from viewers, so editors and owners need the secrets key. Refresh and try again.';
+
 /** The caller's membership, or 404 (members of other workspaces cannot tell whether it exists). */
 async function membership(repo: Repo, accountId: string, workspaceId: string): Promise<{ ws: Workspace; me: Member }> {
   const ws = await repo.getWorkspace(workspaceId);
@@ -144,6 +162,7 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
           : [];
         return {
           id: workspace.id, meta: workspace.meta, epoch: workspace.epoch, role: member.role, keys: member.keys,
+          skeys: member.skeys, viewerSecrets: workspace.viewerSecrets,
           members: members.map(m => ({ accountId: m.accountId, username: m.username, role: m.role, publicKey: m.publicKey })),
           invites,
         };
@@ -151,7 +170,7 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       const invitations = await Promise.all((await repo.invitesFor(accountId)).filter(i => i.expiresAt > now).map(async i => {
         const ws = await repo.getWorkspace(i.workspaceId);
         const from = await repo.findAccountById(i.createdBy);
-        return ws ? { id: i.id, workspaceId: ws.id, meta: ws.meta, role: i.role, from: from?.username ?? '', keys: i.payload } : null;
+        return ws ? { id: i.id, workspaceId: ws.id, meta: ws.meta, role: i.role, from: from?.username ?? '', keys: i.payload, skeys: i.skeys ?? {} } : null;
       }));
       return { workspaces, invitations: invitations.filter(Boolean) };
     }
@@ -169,8 +188,8 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       const id = uuid(b.workspaceId, 'workspace id');
       if (await repo.getWorkspace(id)) throw new HttpError(409, 'That workspace already exists.');
       if ((await repo.workspacesOf(accountId)).length >= 100) throw new HttpError(400, 'You are in too many workspaces.');
-      await repo.createWorkspace({ id, meta: meta(b.meta), epoch: 1, createdBy: accountId },
-        { workspaceId: id, accountId, role: 'owner', keys: sealedKeys(b.keys) });
+      await repo.createWorkspace({ id, meta: meta(b.meta), epoch: 1, createdBy: accountId, viewerSecrets: true },
+        { workspaceId: id, accountId, role: 'owner', keys: sealedKeys(b.keys), skeys: {} });
       return { ok: true };
     }
 
@@ -189,10 +208,14 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       if ((await repo.members(ws.id)).length >= MAX_MEMBERS) throw new HttpError(400, `A workspace can have up to ${MAX_MEMBERS} members.`);
       const r = role(b.role);
       if (r === 'owner') throw new HttpError(400, 'Invite as editor or viewer; you can make someone an owner afterwards.');
+      // Viewers never get the secrets keys; editors must, while secrets are hidden from viewers.
+      const skeys = r === 'viewer' ? {} : secretKeys(b.skeys);
+      if (!ws.viewerSecrets && r !== 'viewer' && !skeys[ws.epoch]) throw new HttpError(400, MISSING_SECRETS);
       for (const old of await repo.invitesOf(ws.id)) if (old.inviteeId === invitee.id) await repo.deleteInvite(old.id);
       const invite: Invite = {
         id: uuid(b.inviteId, 'invite id'), workspaceId: ws.id, role: r, inviteeId: invitee.id,
         payload: sealedKeys(b.keys), authHash: null, createdBy: accountId, expiresAt: Date.now() + INVITE_MS,
+        skeys: Object.keys(skeys).length ? skeys : null,
       };
       await repo.createInvite(invite);
       return { ok: true };
@@ -210,7 +233,7 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       await repo.createInvite({
         id: uuid(b.inviteId, 'invite id'), workspaceId: ws.id, role: r, inviteeId: null,
         payload: { nonce: (b.payload as Sealed).nonce, ct: (b.payload as Sealed).ct }, authHash: sha256(b.auth),
-        createdBy: accountId, expiresAt: Date.now() + INVITE_MS,
+        createdBy: accountId, expiresAt: Date.now() + INVITE_MS, skeys: null, // a link's secrets keys are in its payload
       });
       return { ok: true };
     }
@@ -233,9 +256,13 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       if (!ws) throw new HttpError(404, 'That workspace no longer exists.');
       // A link invite carries no keys for this account: the joiner sealed them to itself.
       const keys = invite.inviteeId === null ? sealedKeys(b.keys) : invite.payload as SealedKeys;
+      const skeys = invite.role === 'viewer' ? {} : invite.inviteeId === null ? secretKeys(b.skeys) : invite.skeys ?? {};
+      if (!ws.viewerSecrets && invite.role !== 'viewer' && !skeys[ws.epoch]) {
+        throw new HttpError(400, 'This invitation is from before a change to the workspace. Ask for a new one.');
+      }
       if (!(await repo.getMember(ws.id, accountId))) {
         if ((await repo.members(ws.id)).length >= MAX_MEMBERS) throw new HttpError(400, `A workspace can have up to ${MAX_MEMBERS} members.`);
-        await repo.putMember({ workspaceId: ws.id, accountId, role: invite.role, keys });
+        await repo.putMember({ workspaceId: ws.id, accountId, role: invite.role, keys, skeys });
       }
       await repo.deleteInvite(invite.id); // single use
       return { workspaceId: ws.id };
@@ -262,7 +289,15 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       if (!target) throw new HttpError(404, 'That person is not a member.');
       const r = role(b.role);
       if (target.role === 'owner' && r !== 'owner') await keepAnOwner(repo, ws.id, target.accountId);
-      await repo.putMember({ ...target, role: r });
+      // A viewer's secrets keys are dropped (the owner's app then replaces the keys, see 'secrets');
+      // someone promoted from viewer gets them, while secrets are hidden from viewers.
+      let skeys = target.skeys ?? {};
+      if (r === 'viewer') skeys = {};
+      else if (!ws.viewerSecrets && !skeys[ws.epoch]) {
+        skeys = { ...skeys, ...secretKeys(b.skeys) };
+        if (!skeys[ws.epoch]) throw new HttpError(400, MISSING_SECRETS);
+      }
+      await repo.putMember({ ...target, role: r, skeys });
       return { ok: true };
     }
 
@@ -273,7 +308,17 @@ export async function workspaceAction(repo: Repo, accountId: string, body: unkno
       const target = await repo.getMember(ws.id, String(b.accountId ?? ''));
       if (!target) throw new HttpError(404, 'That person is not a member.');
       if (target.role === 'owner') await keepAnOwner(repo, ws.id, target.accountId);
-      await rotate(repo, ws, b, [target.accountId]);
+      await rotate(repo, ws, b, [target.accountId], ws.viewerSecrets);
+      return { ok: true };
+    }
+
+    case 'secrets': {
+      // Lets viewers read secret fields, or stops them: either way the workspace gets a new key
+      // number (with a secrets key for owners and editors when hidden), and the owner's app then
+      // seals every page again under the new rule.
+      const { ws } = await asOwner(repo, accountId, uuid(b.workspaceId, 'workspace id'));
+      if (typeof b.viewerSecrets !== 'boolean') throw new HttpError(400, 'Say whether viewers may see secret fields.');
+      await rotate(repo, ws, b, [], b.viewerSecrets);
       return { ok: true };
     }
 
@@ -309,26 +354,39 @@ async function keepAnOwner(repo: Repo, workspaceId: string, leavingId: string): 
   if (!owners.length) throw new HttpError(400, 'A workspace needs at least one owner. Make someone else an owner first, or delete the workspace.');
 }
 
-/** New workspace key number `epoch`: removes `removed`, adds the new sealed key for everyone else. */
-async function rotate(repo: Repo, ws: Workspace, b: Record<string, unknown>, removed: string[]): Promise<void> {
+/**
+ * New workspace key number `epoch`: removes `removed`, adds the new sealed key for everyone else and,
+ * when viewers may not see secret fields, the new secrets key for owners and editors.
+ */
+async function rotate(repo: Repo, ws: Workspace, b: Record<string, unknown>, removed: string[], viewerSecrets: boolean): Promise<void> {
   const epoch = b.epoch;
   if (epoch !== ws.epoch + 1) throw new HttpError(409, 'The workspace key changed meanwhile. Please try again.');
   const newKeys = b.keys;
   if (typeof newKeys !== 'object' || newKeys === null) throw new HttpError(400, 'Malformed workspace keys.');
   const remaining = (await repo.members(ws.id)).filter(m => !removed.includes(m.accountId));
+  const newSKeys = (typeof b.skeys === 'object' && b.skeys !== null ? b.skeys : {}) as Record<string, unknown>;
   for (const m of remaining) {
     const sealed = (newKeys as Record<string, unknown>)[m.accountId];
     if (typeof sealed !== 'string' || !SEALED_KEY.test(sealed)) throw new HttpError(409, 'The member list changed meanwhile. Please try again.');
+    if (!viewerSecrets && m.role !== 'viewer') {
+      const s = newSKeys[m.accountId];
+      if (typeof s !== 'string' || !SEALED_KEY.test(s)) throw new HttpError(409, 'The member list changed meanwhile. Please try again.');
+    }
   }
   const name = meta(b.meta);
   if (name.k !== epoch) throw new HttpError(400, 'Malformed workspace name.');
   for (const id of removed) await repo.removeMember(ws.id, id);
   for (const m of remaining) {
-    await repo.putMember({ workspaceId: ws.id, accountId: m.accountId, role: m.role, keys: { ...m.keys, [epoch]: (newKeys as Record<string, string>)[m.accountId]! } });
+    const skeys = viewerSecrets ? m.skeys ?? {}
+      : m.role === 'viewer' ? {} : { ...m.skeys, [epoch]: newSKeys[m.accountId] as string };
+    await repo.putMember({
+      workspaceId: ws.id, accountId: m.accountId, role: m.role, skeys,
+      keys: { ...m.keys, [epoch]: (newKeys as Record<string, string>)[m.accountId]! },
+    });
   }
   // Pending invites hold only the old keys: they are cancelled (the owner can invite again).
   for (const i of await repo.invitesOf(ws.id)) await repo.deleteInvite(i.id);
-  await repo.updateWorkspace(ws.id, { epoch, meta: name });
+  await repo.updateWorkspace(ws.id, { epoch, meta: name, viewerSecrets });
 }
 
 // ---- Sync (POST /api/wsync) ----

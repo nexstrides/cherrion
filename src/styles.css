@@ -18,6 +18,9 @@
   --sticky-green: #d2f8d2;
   --sticky-pink: #ffd6e7;
   --sticky-purple: #e6d6ff;
+  --scroll-thumb: #cfcdc8;
+  --scroll-thumb-hover: #aeaca6;
+  color-scheme: light;
 }
 
 body.dark {
@@ -32,6 +35,24 @@ body.dark {
   --callout-bg: #222933;
   --field-bg: #1f1f1f;
   --secret-bg: #2a2516;
+  --scroll-thumb: #3d3d3d;
+  --scroll-thumb-hover: #575757;
+  color-scheme: dark;
+}
+
+/* Scrollbars that follow the theme: thin rounded thumbs on a transparent track. Chromium (Chrome,
+   Edge, the desktop app's WebView2) uses the ::-webkit-scrollbar rules; Firefox the standard ones
+   (Chromium ignores ::-webkit-scrollbar wherever scrollbar-color is set, hence the @supports). */
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: var(--scroll-thumb); border-radius: 999px;
+  border: 3px solid transparent; background-clip: padding-box; min-height: 36px;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+::-webkit-scrollbar-thumb:active { background-color: var(--text-muted); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
 }
 
 * { box-sizing: border-box; }
@@ -724,4 +745,53 @@ body.no-popout #btn-popout, body.no-popout .sticky-popout { display: none !impor
 @media (max-width: 520px) {
   .ws-row { flex-wrap: wrap; }
   .ws-row > input { flex-basis: 100%; }
+}
+
+/* Login page: download the desktop app */
+.download-app { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.download-app-link {
+  display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; color: var(--text); text-decoration: none; background: var(--bg);
+}
+.download-app-link:hover { background: var(--bg-hover); border-color: var(--accent); }
+.download-app-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.download-app-icon {
+  flex: none; width: 34px; height: 34px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg)); color: var(--accent);
+}
+.download-app-icon .icon { width: 18px; height: 18px; }
+.download-app-text { display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; line-height: 1.3; }
+a.link-btn { text-decoration: none; }
+a.link-btn:hover { text-decoration: underline; }
+.download-app .link-btn { margin-top: 0; }
+
+/* Secrets copy on click (see editor.ts renderField). */
+.copy-on-click { cursor: copy; }
+input.fg-input.copy-on-click:hover, .secret-mask.copy-on-click:hover { border-color: var(--accent); }
+.totp.copy-on-click:hover .totp-code, .copy-on-click:focus-visible .totp-code { color: var(--accent); }
+.copy-on-click:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.secret-locked {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 10px; border-radius: 6px;
+  border: 1px dashed var(--border); color: var(--text-muted); font-size: 13px; background: var(--field-bg);
+}
+
+/* Attached files (ui/fileBlock.ts) */
+.file-card {
+  display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--field-bg);
+}
+.file-icon { flex: none; font-size: 26px; line-height: 1; padding-top: 2px; }
+.file-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.file-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-meta { font-size: 12px; color: var(--text-muted); }
+.file-note {
+  margin-top: 4px; width: 100%; resize: none; border: none; background: transparent; padding: 2px 0;
+  color: var(--text); font: inherit; font-size: 13px; line-height: 1.45; outline: none;
+}
+.file-note::placeholder { color: var(--text-muted); }
+.file-download { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; }
+.note-container.read-only .file-note:placeholder-shown { display: none; }
+@media (max-width: 520px) {
+  .file-card { flex-wrap: wrap; }
+  .file-download { width: 100%; justify-content: center; }
 }

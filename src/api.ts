@@ -125,6 +125,10 @@ export const api = {
     const notes = Array.isArray(data.notes) ? data.notes.filter(isEnvelope) : [];
     return { notes, rev: typeof data.rev === 'number' ? data.rev : b.since, more: data.more === true, epoch: typeof data.epoch === 'number' ? data.epoch : 1 };
   },
+  /** Attached files' encrypted chunks (see api/_lib/files.ts). */
+  async file(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return post('file', body, true);
+  },
   async logout(): Promise<void> {
     if (!token) return;
     try { await post('logout', {}, true); } catch { /* best effort */ }

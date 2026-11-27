@@ -24,7 +24,8 @@ import { closeTransfer, openExport, openImport, wireTransfer } from './transfer'
 import { stopTotpDisplays } from './totpWidget';
 import { wireTreeDrag } from './treedrag';
 import { canEdit, moveTargets, renderSwitcher, resetWorkspacesUi, showMove, wireWorkspaces } from './workspaces';
-import { getWorkspace } from '../workspaces';
+import { getWorkspace, syncSoon } from '../workspaces';
+import { releaseFile } from '../files';
 
 const narrow = window.matchMedia('(max-width: 860px)');
 
@@ -394,6 +395,7 @@ function renderSyncState(s: sync.SyncState = sync.getSyncState()): void {
 }
 
 async function syncFromMenu(): Promise<void> {
+  syncSoon(); // re-read workspaces and invitations too, not only every 15 s
   if (shell.syncNow) { await shell.syncNow(); return; }
   if (!navigator.onLine) { toast('You are offline. Keep this tab open; changes are saved when you reconnect.'); return; }
   await sync.syncNow();
@@ -593,7 +595,15 @@ async function deleteNote(id: string): Promise<void> {
   });
   if (!ok) return;
   const fromTree = $('tree-container').contains(document.activeElement);
+  // Files attached to the deleted pages are deleted too, unless another page still shows them.
+  const subtree = new Set([note.id]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const n of store.activeNotes()) if (n.parentId && subtree.has(n.parentId) && !subtree.has(n.id)) { subtree.add(n.id); grew = true; }
+  }
+  const files = [...subtree].flatMap(id => store.getNote(id)?.blocks.flatMap(b => (b.type === 'file' ? [b.fileId] : [])) ?? []);
   const removed = store.deleteNoteTree(note.id);
+  for (const fileId of new Set(files)) if (!store.fileInUse(fileId)) void releaseFile(fileId);
   if (ui.activeNoteId && removed.includes(ui.activeNoteId)) selectNote(store.activeNotes()[0]?.id ?? null);
   renderAll();
   // Keep working from the keyboard: focus moves to the page that is now selected.

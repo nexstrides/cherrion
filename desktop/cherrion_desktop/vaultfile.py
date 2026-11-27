@@ -6,6 +6,15 @@ one encrypted envelope per note. Decryption happens in the app window; this modu
     meta  (key, value)                       header JSON, sync settings
     notes (id, updated_at, deleted, envelope, dirty)
                                               dirty = changed here, not yet on the sync server
+    spaces      (id, record)                 shared workspaces this account owns: one record each,
+                                              sealed with the vault key (name, members, keys)
+    space_notes (space, id, updated_at, deleted, envelope, dirty)
+                                              their pages, encrypted with the workspace key
+    files (id, idx, count, chunk, uploaded)  attached files: encrypted chunks of up to 2 MB, and
+                                              whether each is on the sync server yet
+
+The workspace and file tables are created when a file is opened, so older files keep working and older
+versions of the app (which never read them) can still open newer files.
 
 The connection uses SQLite's exclusive locking mode, so a second Cherrion window cannot open the
 same file and overwrite it, and the rollback journal, so the file stays a single file at rest.
@@ -37,6 +46,30 @@ create table notes (
 );
 """
 
+_SPACES_SCHEMA = """
+create table if not exists spaces (
+  id     text primary key,
+  record text not null
+);
+create table if not exists space_notes (
+  space      text not null,
+  id         text not null,
+  updated_at integer not null,
+  deleted    integer not null,
+  envelope   text not null,
+  dirty      integer not null default 0,
+  primary key (space, id)
+);
+create table if not exists files (
+  id       text not null,
+  idx      integer not null,
+  count    integer not null,
+  chunk    text not null,
+  uploaded integer not null default 0,
+  primary key (id, idx)
+);
+"""
+
 # Meta keys the app may write (anything else is refused).
 META_KEYS = {'sync_url', 'sync_username', 'sync_since'}
 
@@ -57,6 +90,25 @@ def _check_envelope(env: Any) -> dict:
     if not isinstance(env.get('ct'), str) or not isinstance(env.get('nonce'), str):
         raise VaultFileError('Notes must be encrypted.')
     return env
+
+
+def _check_space_id(space: Any) -> str:
+    if not isinstance(space, str) or not space or len(space) > 100:
+        raise VaultFileError('Invalid workspace id.')
+    return space
+
+
+def _check_sealed(record: Any) -> dict:
+    """Workspace records are sealed in the app window; this module only stores them."""
+    if not isinstance(record, dict) or not isinstance(record.get('nonce'), str) or not isinstance(record.get('ct'), str):
+        raise VaultFileError('Workspace records must be encrypted.')
+    return record
+
+
+def _ensure_space_tables(conn: sqlite3.Connection) -> None:
+    for statement in _SPACES_SCHEMA.split(';'):
+        if statement.strip():
+            conn.execute(statement)
 
 
 def _check_header(header: Any) -> dict:
@@ -116,6 +168,7 @@ class VaultFile:
             for statement in _SCHEMA.split(';'):
                 if statement.strip():
                     conn.execute(statement)
+            _ensure_space_tables(conn)
             conn.execute('insert into meta (key, value) values (?, ?)', ('header', _dumps(header)))
             conn.executemany(
                 'insert into notes (id, updated_at, deleted, envelope, dirty) values (?, ?, ?, ?, 0)',
@@ -150,6 +203,7 @@ class VaultFile:
                 raise VaultFileError(f'{p.name} was saved by a newer version of Cherrion. Update the app to open it.')
             if not conn.execute("select 1 from meta where key = 'header'").fetchone():
                 raise VaultFileError(f'{p.name} is damaged: its vault header is missing.')
+            _ensure_space_tables(conn)  # files from before shared workspaces
         except sqlite3.DatabaseError as err:
             conn.close()
             raise VaultFileError(f'{p.name} is not a Cherrion vault file.') from err
@@ -171,22 +225,43 @@ class VaultFile:
         with self._lock:
             meta = dict(self._conn.execute('select key, value from meta').fetchall())
             rows = self._conn.execute('select envelope, dirty from notes').fetchall()
+            space_rows = self._conn.execute('select id, record from spaces').fetchall()
+            space_note_rows = self._conn.execute('select space, envelope, dirty from space_notes').fetchall()
         notes = [json.loads(env) for env, _ in rows]
         dirty = [n['id'] for n, (_, d) in zip(notes, rows) if d]
         sync = None
         if meta.get('sync_url') and meta.get('sync_username'):
             sync = {'url': meta['sync_url'], 'username': meta['sync_username'], 'since': int(meta.get('sync_since') or 0)}
-        return {'header': json.loads(meta['header']), 'notes': notes, 'dirty': dirty, 'sync': sync}
+        spaces = [{'id': sid, 'record': json.loads(record)} for sid, record in space_rows]
+        space_notes = [{'space': sid, 'envelope': json.loads(env), 'dirty': bool(d)} for sid, env, d in space_note_rows]
+        return {'header': json.loads(meta['header']), 'notes': notes, 'dirty': dirty, 'sync': sync,
+                'spaces': spaces, 'spaceNotes': space_notes}
 
     # ---- Writing ----
 
-    def save(self, notes: Iterable[dict] = (), header: dict | None = None, meta: dict | None = None) -> None:
-        """Writes changed notes ({envelope, dirty}), the header and settings in one transaction.
-        An older copy of a note never replaces a newer one (last write wins, as on the server)."""
+    def save(self, notes: Iterable[dict] = (), header: dict | None = None, meta: dict | None = None,
+             spaces: Iterable[dict] = (), space_notes: Iterable[dict] = (), forget_spaces: Iterable[str] = ()) -> None:
+        """Writes changed notes ({envelope, dirty}), the header and settings in one transaction, plus
+        owned workspaces: records ({id, record}), their pages ({space, envelope, dirty}) and workspaces
+        to remove entirely (forget_spaces). An older copy of a note never replaces a newer one (last
+        write wins, as on the server)."""
         rows = []
         for item in notes:
             env = _check_envelope(item.get('envelope') if isinstance(item, dict) else None)
             rows.append((env['id'], env['updatedAt'], int(env['deleted']), _dumps(env), int(bool(item.get('dirty')))))
+        space_rows = []
+        for item in spaces:
+            if not isinstance(item, dict):
+                raise VaultFileError('Invalid workspace data.')
+            space_rows.append((_check_space_id(item.get('id')), _dumps(_check_sealed(item.get('record')))))
+        space_note_rows = []
+        for item in space_notes:
+            if not isinstance(item, dict):
+                raise VaultFileError('Invalid note data.')
+            env = _check_envelope(item.get('envelope'))
+            space_note_rows.append((_check_space_id(item.get('space')), env['id'], env['updatedAt'], int(env['deleted']),
+                                    _dumps(env), int(bool(item.get('dirty')))))
+        forget = [_check_space_id(sid) for sid in forget_spaces]
         if header is not None:
             _check_header(header)
         for key in (meta or {}):
@@ -200,6 +275,17 @@ class VaultFile:
                        on conflict (id) do update set updated_at = excluded.updated_at, deleted = excluded.deleted,
                          envelope = excluded.envelope, dirty = excluded.dirty
                        where excluded.updated_at >= notes.updated_at""", rows)
+                for sid in forget:
+                    self._conn.execute('delete from space_notes where space = ?', (sid,))
+                    self._conn.execute('delete from spaces where id = ?', (sid,))
+                self._conn.executemany(
+                    'insert into spaces (id, record) values (?, ?) on conflict (id) do update set record = excluded.record',
+                    space_rows)
+                self._conn.executemany(
+                    """insert into space_notes (space, id, updated_at, deleted, envelope, dirty) values (?, ?, ?, ?, ?, ?)
+                       on conflict (space, id) do update set updated_at = excluded.updated_at, deleted = excluded.deleted,
+                         envelope = excluded.envelope, dirty = excluded.dirty
+                       where excluded.updated_at >= space_notes.updated_at""", space_note_rows)
                 if header is not None:
                     self._conn.execute("update meta set value = ? where key = 'header'", (_dumps(header),))
                 for key, value in (meta or {}).items():
@@ -213,13 +299,53 @@ class VaultFile:
                 self._conn.execute('rollback')
                 raise
 
-    def mark_clean(self, sent: Iterable[Any]) -> None:
-        """The sync server stored these exact versions ([id, updatedAt] pairs)."""
+    # ---- Attached files (encrypted chunks; the key is inside the page that shows the file) ----
+
+    def file_put(self, file_id: str, idx: int, count: int, chunk: dict, uploaded: bool) -> None:
+        _check_space_id(file_id)
+        if not isinstance(idx, int) or not isinstance(count, int) or not 0 <= idx < count <= 16:
+            raise VaultFileError('Invalid file chunk.')
+        _check_sealed(chunk)
+        with self._lock:
+            self._conn.execute(
+                """insert into files (id, idx, count, chunk, uploaded) values (?, ?, ?, ?, ?)
+                   on conflict (id, idx) do update set count = excluded.count, chunk = excluded.chunk,
+                     uploaded = max(files.uploaded, excluded.uploaded)""",
+                (file_id, idx, count, _dumps(chunk), int(bool(uploaded))))
+
+    def file_get(self, file_id: str, idx: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute('select chunk from files where id = ? and idx = ?', (str(file_id), int(idx))).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def file_pending(self, limit: int = 2) -> list[dict]:
+        """A few chunks not on the sync server yet (with their content, so keep the limit small)."""
+        with self._lock:
+            rows = self._conn.execute('select id, idx, count, chunk from files where uploaded = 0 order by id, idx limit ?',
+                                      (max(1, min(int(limit), 8)),)).fetchall()
+        return [{'fileId': i, 'index': x, 'count': c, 'chunk': json.loads(ch)} for i, x, c, ch in rows]
+
+    def file_mark_uploaded(self, file_id: str, idx: int) -> None:
+        with self._lock:
+            self._conn.execute('update files set uploaded = 1 where id = ? and idx = ?', (str(file_id), int(idx)))
+
+    def file_delete(self, file_id: str) -> None:
+        with self._lock:
+            self._conn.execute('delete from files where id = ?', (str(file_id),))
+
+    def mark_clean(self, sent: Iterable[Any], space: str | None = None) -> None:
+        """The sync server stored these exact versions ([id, updatedAt] pairs), of personal notes or
+        of one workspace's pages."""
         pairs = [(str(p[0]), int(p[1])) for p in sent]
         with self._lock:
             self._conn.execute('begin')
             try:
-                self._conn.executemany('update notes set dirty = 0 where id = ? and updated_at = ?', pairs)
+                if space is None:
+                    self._conn.executemany('update notes set dirty = 0 where id = ? and updated_at = ?', pairs)
+                else:
+                    sid = _check_space_id(space)
+                    self._conn.executemany('update space_notes set dirty = 0 where space = ? and id = ? and updated_at = ?',
+                                           [(sid, i, u) for i, u in pairs])
                 self._conn.execute('commit')
             except BaseException:
                 self._conn.execute('rollback')

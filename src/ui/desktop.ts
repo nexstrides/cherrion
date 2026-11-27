@@ -97,7 +97,7 @@ async function unlockSelected(password: string): Promise<void> {
   }
   selected = file.path;
   store.unlock(file.header, vaultKey, file.notes, file.unsent);
-  session.attach(file.path, file.sync, loginKey);
+  session.attach(file.path, file.sync, loginKey, file.kept);
 }
 
 function wireStartScreen(): void {
@@ -222,7 +222,7 @@ function wireStartScreen(): void {
       }
       if (!loginKey) wipe(next.authKey);
       store.unlock(next.header, vaultKey, file.notes, file.unsent);
-      session.attach(file.path, file.sync, loginKey);
+      session.attach(file.path, file.sync, loginKey, file.kept);
       session.saveHeader(next.header);
       enterApp();
       toast(`Password reset. Your recovery key still works.${onlineNote}`, onlineNote ? 'error' : 'info', onlineNote ? 12000 : 6000);

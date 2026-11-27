@@ -383,6 +383,53 @@ export function showSettings(id: string): void {
     parts.push(el('p', { className: 'muted small', text: 'Hover a name to see its safety code. Comparing codes with that person confirms nobody, not even the server, swapped their key.' }));
   }
 
+  // Secret fields and viewers
+  const viewers = w.members.filter(m => m.role === 'viewer').length;
+  if (owner) {
+    parts.push(el('h4', { className: 'section-title', text: 'Secret fields' }));
+    const box = el('input', { type: 'checkbox', checked: w.viewerSecrets });
+    box.onchange = async () => {
+      const allow = box.checked;
+      box.checked = !allow; // until confirmed and done
+      const ok = await confirmDialog(allow
+        ? {
+          title: 'Let viewers see secret fields?',
+          message: `${viewers ? `The ${viewers} viewer${viewers === 1 ? '' : 's'} of “${w.name}”` : 'Viewers'} will be able to read and copy passwords, secret notes and 2FA codes. Every page is saved again, and the workspace gets a new key.`,
+          confirmLabel: 'Let viewers see them',
+          danger: false,
+        }
+        : {
+          title: 'Hide secret fields from viewers?',
+          message: 'Passwords, secret notes and 2FA codes are sealed with a key that only owners and editors get, so viewers cannot read them, not even with the workspace key. Every page is saved again and the workspace gets a new key. Anything viewers already saw cannot be taken back.',
+          confirmLabel: 'Hide from viewers',
+          danger: false,
+        });
+      if (!ok) return;
+      box.disabled = true;
+      try {
+        const pages = await ws.setViewerSecrets(id, allow);
+        toast(allow ? `Viewers can now see secret fields (${pages} page${pages === 1 ? '' : 's'} saved again).` : `Secret fields are now hidden from viewers (${pages} page${pages === 1 ? '' : 's'} sealed again).`);
+      } catch (err) {
+        showError(line, err);
+      }
+      redo();
+    };
+    parts.push(
+      el('label', { className: 'check' }, box, 'Viewers can see secret fields (passwords, secret notes, 2FA codes)'),
+      el('p', {
+        className: 'muted small',
+        text: w.viewerSecrets
+          ? 'Viewers can read and copy them. Turn this off to seal them with a key only owners and editors get.'
+          : 'Hidden from viewers: they are sealed with a key only owners and editors get. Viewers see “Hidden” instead.',
+      }),
+    );
+  } else {
+    parts.push(el('p', {
+      className: 'muted small',
+      text: w.viewerSecrets ? 'Viewers in this workspace can see secret fields.' : 'Secret fields (passwords, secret notes, 2FA codes) are hidden from viewers in this workspace.',
+    }));
+  }
+
   // Invite
   if (owner) {
     parts.push(el('h4', { className: 'section-title', text: 'Invite' }));
@@ -563,7 +610,11 @@ export function wireWorkspaces(): void {
     }
     if (view?.kind === 'settings' && view.id && !ws.getWorkspace(view.id)) closeWorkspaceDialog();
     renderSwitcher();
-    render.editor(); // the read-only state may have changed
+    // A role change (Editor ↔ Viewer) flips the open page between editable and read-only. Rebuild it
+    // only then: rebuilding on every change would throw the cursor out of what is being typed.
+    const note = store.getNote(ui.activeNoteId);
+    const readOnly = !!note && store.isReadOnly(store.spaceOf(note.id));
+    if (readOnly !== $('note-container').classList.contains('read-only')) render.editor();
     handlePendingLink();
   });
   window.addEventListener('hashchange', captureJoinLink);

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -70,6 +71,76 @@ class VaultFileTest(unittest.TestCase):
             vault.save([{'envelope': {'id': 'a', 'updatedAt': 1, 'deleted': False, 'title': 'secret'}}])
         with self.assertRaises(VaultFileError):
             vault.save([{'envelope': {**env('a', 1), 'updatedAt': True}}])
+        vault.close()
+
+    def test_owned_workspaces_are_kept_apart_from_personal_notes(self) -> None:
+        record = {'nonce': 'bm9uY2U=', 'ct': 'sealed-record'}
+        vault = VaultFile.create(self.path, HEADER, [env('p', 1)])
+        vault.save(spaces=[{'id': 'ws-1', 'record': record}],
+                   space_notes=[{'space': 'ws-1', 'envelope': env('a', 5), 'dirty': True},
+                                {'space': 'ws-1', 'envelope': env('b', 2), 'dirty': False}])
+        vault.save(space_notes=[{'space': 'ws-1', 'envelope': env('a', 3), 'dirty': False}])  # older copy: ignored
+        vault.close()
+        vault = VaultFile.open(self.path)
+        data = vault.read()
+        self.assertEqual(data['spaces'], [{'id': 'ws-1', 'record': record}])
+        self.assertEqual(sorted((n['envelope']['id'], n['envelope']['ct'], n['dirty']) for n in data['spaceNotes']),
+                         [('a', 'ct-5', True), ('b', 'ct-2', False)])
+        self.assertEqual([n['id'] for n in data['notes']], ['p'])  # personal notes untouched
+        vault.mark_clean([['a', 5]])  # a personal note with that id: not this one
+        self.assertTrue(next(n for n in vault.read()['spaceNotes'] if n['envelope']['id'] == 'a')['dirty'])
+        vault.mark_clean([['a', 5]], 'ws-1')
+        self.assertFalse(any(n['dirty'] for n in vault.read()['spaceNotes']))
+        vault.save(forget_spaces=['ws-1'])
+        data = vault.read()
+        self.assertEqual((data['spaces'], data['spaceNotes']), ([], []))
+        vault.close()
+
+    def test_attached_files_are_kept_and_uploaded_once(self) -> None:
+        chunk = {'nonce': 'bm9uY2U=', 'ct': 'encrypted-part'}
+        vault = VaultFile.create(self.path, HEADER)
+        vault.file_put('f-1', 0, 2, chunk, False)
+        vault.file_put('f-1', 1, 2, {**chunk, 'ct': 'second'}, False)
+        vault.file_put('f-2', 0, 1, chunk, True)  # cached from the server: already uploaded
+        vault.close()
+        vault = VaultFile.open(self.path)
+        self.assertEqual(vault.file_get('f-1', 1), {**chunk, 'ct': 'second'})
+        self.assertIsNone(vault.file_get('f-1', 5))
+        self.assertEqual([(p['fileId'], p['index']) for p in vault.file_pending(8)], [('f-1', 0), ('f-1', 1)])
+        vault.file_mark_uploaded('f-1', 0)
+        vault.file_put('f-1', 0, 2, chunk, False)  # saving again never un-uploads it
+        self.assertEqual([(p['fileId'], p['index']) for p in vault.file_pending(8)], [('f-1', 1)])
+        vault.file_delete('f-1')
+        self.assertIsNone(vault.file_get('f-1', 1))
+        self.assertEqual(vault.file_pending(8), [])
+        with self.assertRaises(VaultFileError):
+            vault.file_put('f-3', 0, 1, {'data': 'plain'}, False)
+        with self.assertRaises(VaultFileError):
+            vault.file_put('f-3', 2, 1, chunk, False)
+        vault.close()
+
+    def test_refuses_unencrypted_workspace_records(self) -> None:
+        vault = VaultFile.create(self.path, HEADER)
+        with self.assertRaises(VaultFileError):
+            vault.save(spaces=[{'id': 'ws-1', 'record': {'name': 'Team plans'}}])
+        with self.assertRaises(VaultFileError):
+            vault.save(space_notes=[{'space': '', 'envelope': env('a', 1)}])
+        vault.close()
+
+    def test_files_from_before_workspaces_still_open(self) -> None:
+        # The layout version 1.3.0 wrote: no workspace tables.
+        conn = sqlite3.connect(self.path)
+        conn.execute('pragma application_id = 1128813145')
+        conn.execute('pragma user_version = 1')
+        conn.execute('create table meta (key text primary key, value text not null)')
+        conn.execute('create table notes (id text primary key, updated_at integer not null, deleted integer not null, envelope text not null, dirty integer not null default 0)')
+        conn.execute("insert into meta values ('header', ?)", (json.dumps(HEADER),))
+        conn.commit()
+        conn.close()
+        vault = VaultFile.open(self.path)
+        self.assertEqual((vault.read()['spaces'], vault.read()['spaceNotes']), ([], []))
+        vault.save(spaces=[{'id': 'ws-1', 'record': {'nonce': 'n', 'ct': 'c'}}])
+        self.assertEqual(len(vault.read()['spaces']), 1)
         vault.close()
 
     def test_second_window_cannot_open_the_same_file(self) -> None:
