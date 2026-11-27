@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit
 
-ENDPOINTS = {'prelogin', 'signup', 'login', 'recover', 'account', 'sync', 'logout', 'status'}
+ENDPOINTS = {'prelogin', 'signup', 'login', 'recover', 'account', 'sync', 'logout', 'status', 'workspace', 'wsync'}
 LOCAL_HOSTS = {'localhost', '127.0.0.1', '::1'}
 USER_AGENT = 'Cherrion-Desktop'
 TIMEOUT = 30

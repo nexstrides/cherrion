@@ -31,6 +31,8 @@ export function isVaultHeader(x: unknown): x is VaultHeader {
     && isKdfParams(h.kdf)
     && isSealed(h.passwordWrap) && isSealed(h.recoveryWrap)
     && (h.profile === undefined || isSealed(h.profile))
+    && (h.identity === undefined || (typeof h.identity === 'object' && h.identity !== null
+      && typeof h.identity.publicKey === 'string' && /^[A-Za-z0-9_-]{43}$/.test(h.identity.publicKey) && isSealed(h.identity.privateKey)))
     && typeof h.mac === 'string';
 }
 
@@ -40,5 +42,6 @@ export function isEnvelope(x: unknown): x is Envelope {
   return typeof e.id === 'string' && e.id.length > 0 && e.id.length <= 64 && e.id !== VAULT_RECORD_ID
     && typeof e.updatedAt === 'number' && Number.isFinite(e.updatedAt)
     && typeof e.deleted === 'boolean' && e.v === 1
-    && typeof e.nonce === 'string' && typeof e.ct === 'string';
+    && typeof e.nonce === 'string' && typeof e.ct === 'string'
+    && (e.k === undefined || isInt(e.k, 1, 1_000_000));
 }

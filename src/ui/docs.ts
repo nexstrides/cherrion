@@ -45,6 +45,26 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    id: 'workspaces', icon: '👥', title: 'Shared workspaces',
+    body: [
+      'A **workspace** is a separate set of pages shared with other Cherrion accounts, for a family or a small team. Your **Personal** pages are never shared. Each workspace has its own key: its pages and its name are encrypted for its members only, and the server cannot read them.',
+      { list: [
+        '**Switch spaces** with the menu above the search box: Personal, then each workspace. The tree, search and stickies show the chosen space.',
+        '**Create one:** space menu → New workspace…, then invite people from Workspace settings.',
+        '**Invite by username:** they see the invitation (a red number on the space menu) after logging in, and choose to join or decline.',
+        '**Invite by link:** “Create invite link” makes a single-use link valid for 7 days. Send it privately: anyone who has it can join once. The secret part of the link never reaches the server.',
+        '**Roles:** Owners invite and remove people and can delete the workspace; Editors add, change and delete pages; Viewers can read and copy but not change anything.',
+        '**Removing someone** gives the workspace a new key, so nothing written afterwards can be read with the old one. Pages they already saw may still be in their copies.',
+        '**Move a page** between Personal and a workspace with ⋯ → Move to workspace… (or right-click it on desktop). Its sub-pages move with it.',
+        '**Safety codes:** in Workspace settings, hover a member’s name to see a code. If they see the same code for you, nobody (not even the server) swapped your keys.',
+        'Two people editing the **same page at the same moment**: the last save wins. Editing different pages at the same time is always fine.',
+      ] },
+      { note: DESKTOP
+        ? 'In the desktop app, workspaces need a vault file linked to an online account, and are shown while connected; they are not stored in the .cherrion file. Files that are not linked are never shared.'
+        : 'Workspaces need a connection, like the rest of the website.' },
+    ],
+  },
+  {
     id: 'pages', icon: '🌲', title: 'Pages and the tree',
     body: [
       { list: [

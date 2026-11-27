@@ -80,3 +80,28 @@ export const toHex = (bytes: Uint8Array): string => sodium.to_hex(bytes);
 export const fromHex = (hex: string): Uint8Array => sodium.from_hex(hex);
 
 export { isSealed } from './shapes';
+
+// ---- Public-key encryption (shared workspaces) ----
+
+export interface BoxKeyPair { publicKey: Uint8Array; privateKey: Uint8Array }
+
+/** A new X25519 key pair (crypto_box). */
+export function newBoxKeyPair(): BoxKeyPair {
+  const kp = sodium.crypto_box_keypair();
+  return { publicKey: kp.publicKey, privateKey: kp.privateKey };
+}
+
+/** Anonymous sealed box: only the holder of the matching private key can open it. */
+export const sealTo = (publicKey: Uint8Array, message: Uint8Array): string =>
+  toB64(sodium.crypto_box_seal(message, publicKey));
+
+export function openSealedBox(sealed: string, keyPair: BoxKeyPair): Uint8Array {
+  try {
+    return sodium.crypto_box_seal_open(fromB64(sealed), keyPair.publicKey, keyPair.privateKey);
+  } catch {
+    throw new DecryptError('This key was not sealed for you');
+  }
+}
+
+/** Short, human-comparable fingerprint of public keys (for the safety code). */
+export const fingerprint = (bytes: Uint8Array): string => toHex(sodium.crypto_generichash(16, bytes, null));

@@ -142,35 +142,38 @@ export async function detach(): Promise<void> {
 /** Reconnects with the kept login key (at unlock, after being offline, after the session expired). */
 let connecting: Promise<void> | null = null;
 export function connect(): Promise<void> {
-  connecting ??= (async () => {
-    try {
-      if (!link || !authKey || hasSession()) return;
-      remote = { kind: 'connecting' };
-      changed();
-      server = link.url;
-      const session = await api.login(link.username, authKey);
-      setSession(session.token);
-      store.adoptHeader(session.header);
-      remote = { kind: 'connected' };
-      changed();
-      sync.startSync();
-      void sync.syncNow();
-    } catch (err) {
-      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-        wipe(authKey);
-        authKey = null;
-        remote = { kind: 'denied', message: 'The online account did not accept this file’s password. If the password was changed on another device, log in again in Settings → Online sync.' };
-      } else if (err instanceof ApiError && err.status === 0) {
-        remote = { kind: 'offline', message: err.message };
-      } else {
-        remote = { kind: 'denied', message: message(err) };
-      }
-      changed();
-    } finally {
-      connecting = null;
-    }
-  })();
+  // `.finally` clears the slot asynchronously, after it was assigned. (A `finally` inside the async
+  // function would run synchronously on an early return, before `??=` stores the promise, leaving a
+  // settled promise in the slot for good: every later connect() would then do nothing.)
+  connecting ??= reconnect().finally(() => { connecting = null; });
   return connecting;
+}
+
+async function reconnect(): Promise<void> {
+  try {
+    if (!link || !authKey || hasSession()) return;
+    remote = { kind: 'connecting' };
+    changed();
+    server = link.url;
+    const session = await api.login(link.username, authKey);
+    setSession(session.token);
+    store.adoptHeader(session.header);
+    remote = { kind: 'connected' };
+    changed();
+    sync.startSync();
+    void sync.syncNow();
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+      wipe(authKey);
+      authKey = null;
+      remote = { kind: 'denied', message: 'The online account did not accept this file’s password. If the password was changed on another device, log in again in Settings → Online sync.' };
+    } else if (err instanceof ApiError && err.status === 0) {
+      remote = { kind: 'offline', message: err.message };
+    } else {
+      remote = { kind: 'denied', message: message(err) };
+    }
+    changed();
+  }
 }
 
 /** Accepts "cherrion-note.vercel.app" or a full URL; HTTPS only (plain HTTP only on this computer). */

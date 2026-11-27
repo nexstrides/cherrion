@@ -14,7 +14,7 @@ import { closeDialog, confirmDialog, wireDialog } from './dialog';
 import { $, $input, autoResize, download, el, nextPaint, setWorking, toast } from './dom';
 import { addContextMenu, type ContextMenu } from './contextMenu';
 import { attachMenu, closeDropdowns, mountDropdown, SEPARATOR, type Dropdown, type DropdownOption } from './dropdown';
-import { addBlockAtEnd, closeSlashMenu, currentNote, focusBlock, renderBreadcrumbs, renderEditor, wireEditorContextMenu, wireEditorPictures } from './editor';
+import { addBlockAtEnd, closeSlashMenu, currentNote, focusBlock, renderBreadcrumbs, renderEditor, wireEditorContextMenu, wireEditorPictures, wireReadOnlyGuard } from './editor';
 import { closeLightbox } from './images';
 import { openDocs, wireDocs } from './docs';
 import { closeTemplatePicker, openTemplatePicker, wireTemplatePicker } from './picker';
@@ -23,6 +23,8 @@ import { openFloatingSticky, renderStickyBoard } from './stickies';
 import { closeTransfer, openExport, openImport, wireTransfer } from './transfer';
 import { stopTotpDisplays } from './totpWidget';
 import { wireTreeDrag } from './treedrag';
+import { canEdit, moveTargets, renderSwitcher, resetWorkspacesUi, showMove, wireWorkspaces } from './workspaces';
+import { getWorkspace } from '../workspaces';
 
 const narrow = window.matchMedia('(max-width: 860px)');
 
@@ -95,7 +97,7 @@ function treeRow(note: Note, depth: number, hasChildren: boolean): HTMLElement {
     onclick: e => { e.stopPropagation(); openTemplatePicker(note.id); },
   });
   add.setAttribute('aria-label', addLabel);
-  row.append(add);
+  if (canEdit()) row.append(add);
 
   /** Shows or hides the sub-pages (kept on the note, so it syncs), keeping focus on this row. */
   const setExpanded = (expanded: boolean) => {
@@ -116,14 +118,15 @@ function treeRow(note: Note, depth: number, hasChildren: boolean): HTMLElement {
     if (e.target !== row) return; // keys on the + button belong to the button
     if (e.altKey && e.key.startsWith('Arrow')) {
       e.preventDefault();
+      if (!canEdit()) return;
       const changes = keyboardMove(store.activeNotes(), note.id, e.key);
       if (changes?.length) applyMove(note.id, changes, true);
       return;
     }
     if (e.ctrlKey || e.metaKey || e.shiftKey) return;
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-    else if (e.key === 'Delete') { e.preventDefault(); void deleteNote(note.id); }
-    else if (e.key === 'F2') { e.preventDefault(); treeAction(note.id, 'rename'); }
+    else if (e.key === 'Delete') { e.preventDefault(); if (canEdit()) void deleteNote(note.id); }
+    else if (e.key === 'F2') { e.preventDefault(); if (canEdit()) treeAction(note.id, 'rename'); }
     else if (e.key === 'ArrowRight') {
       // Expand; if already open, go to the first sub-page (the row right below).
       e.preventDefault();
@@ -196,6 +199,7 @@ function treeAction(id: string, action: string): void {
   } else if (action === 'delete') void deleteNote(id);
   else if (action === 'export') openExport(id);
   else if (action === 'import') openImport(id);
+  else if (action === 'move') showMove(id);
 }
 
 function treeContextMenu(e: MouseEvent): ContextMenu {
@@ -204,13 +208,27 @@ function treeContextMenu(e: MouseEvent): ContextMenu {
   if (!row || !note || note.deleted) {
     return {
       label: 'Notes',
-      items: [{ value: 'new', label: 'New page…', svg: 'plus' }, { value: 'import', label: 'Import page…', svg: 'upload' }],
+      items: canEdit() ? [{ value: 'new', label: 'New page…', svg: 'plus' }, { value: 'import', label: 'Import page…', svg: 'upload' }] : [],
       onSelect: v => (v === 'import' ? openImport(null) : openTemplatePicker(null)),
     };
   }
   row.focus({ preventScroll: true });
   const siblings = store.activeNotes().filter(n => n.parentId === note.parentId);
   const hasChildren = store.activeNotes().some(n => n.parentId === note.id);
+  if (!canEdit()) {
+    // Viewers: reading only.
+    return {
+      label: `Page “${note.title || 'Untitled'}”`,
+      items: [
+        { value: 'open', label: 'Open', svg: 'file', hint: 'Enter' },
+        ...(hasChildren ? [{ value: 'toggle', label: note.collapsed ? 'Expand' : 'Collapse', svg: 'folder' as const }] : []),
+        SEPARATOR,
+        { value: 'export', label: 'Export…', svg: 'download' },
+      ],
+      onSelect: action => treeAction(note.id, action),
+    };
+  }
+  const canMove = moveTargets(note.id).length > 0;
   const items: DropdownOption[] = [
     { value: 'open', label: 'Open', svg: 'file', hint: 'Enter' },
     SEPARATOR,
@@ -226,6 +244,7 @@ function treeContextMenu(e: MouseEvent): ContextMenu {
     SEPARATOR,
     { value: 'export', label: 'Export…', svg: 'download' },
     { value: 'import', label: 'Import here…', svg: 'upload' },
+    ...(canMove ? [{ value: 'move', label: 'Move to workspace…', svg: 'move' as const }] : []),
     SEPARATOR,
     { value: 'delete', label: 'Delete…', svg: 'trash', hint: 'Del', danger: true },
   ];
@@ -260,6 +279,7 @@ function renderTabs(): void {
 export function renderAll(): void {
   document.body.classList.toggle('dark', settings.dark);
   renderUserChip();
+  renderSwitcher();
   renderTabs();
   renderTree();
   renderEditor();
@@ -289,6 +309,7 @@ export function clearAppDom(): void {
   closeDialog();
   closeTransfer();
   closeLightbox();
+  resetWorkspacesUi();
   setNav(false);
   $('settings-modal').classList.add('hidden');
   for (const id of ['tree-container', 'blocks-container', 'sticky-grid', 'note-meta', 'breadcrumbs']) $(id).replaceChildren();
@@ -564,7 +585,8 @@ async function deleteNote(id: string): Promise<void> {
   const note = store.getNote(id);
   if (!note || note.deleted) return;
   const subs = countDescendants(store.activeNotes(), note.id);
-  const where = DESKTOP && !session.linkedAccount() ? 'from this file' : 'on all synced devices';
+  const workspace = getWorkspace(store.spaceOf(note.id));
+  const where = workspace ? `for everyone in “${workspace.name}”` : DESKTOP && !session.linkedAccount() ? 'from this file' : 'on all synced devices';
   const ok = await confirmDialog({
     title: 'Delete page?',
     message: `“${note.title || 'Untitled'}”${subs ? ` and its ${subs} sub-page${subs === 1 ? '' : 's'}` : ''} will be deleted ${where}. This cannot be undone.`,
@@ -603,7 +625,9 @@ export function wireApp(): void {
   addContextMenu($('tree-container'), treeContextMenu);
   wireEditorContextMenu();
   wireEditorPictures();
+  wireReadOnlyGuard();
   wireTreeDrag($('tree-container'), (dragId, target) => {
+    if (!canEdit()) return;
     const changes = planMove(store.activeNotes(), dragId, target.id, target.pos);
     if (changes?.length) applyMove(dragId, changes, false);
   });
@@ -615,22 +639,29 @@ export function wireApp(): void {
   });
   narrow.addEventListener('change', () => { if (!narrow.matches) setNav(false); });
 
-  $('btn-new-root').onclick = () => openTemplatePicker(null);
-  $('btn-empty-create').onclick = () => openTemplatePicker(null);
-  $('btn-add-child').onclick = () => { if (currentNote()) openTemplatePicker(ui.activeNoteId); };
-  $('btn-delete-note').onclick = () => void deleteCurrentNote();
+  const viewOnly = () => { toast('You can view this workspace but not change it.'); return true; };
+  $('btn-new-root').onclick = () => { if (canEdit() || !viewOnly()) openTemplatePicker(null); };
+  $('btn-empty-create').onclick = () => { if (canEdit() || !viewOnly()) openTemplatePicker(null); };
+  $('btn-add-child').onclick = () => { if (currentNote() && canEdit()) openTemplatePicker(ui.activeNoteId); };
+  $('btn-delete-note').onclick = () => { if (canEdit()) void deleteCurrentNote(); };
+  wireWorkspaces();
   wireTransfer();
   wireDocs();
   attachMenu($('btn-page-more') as HTMLButtonElement, {
     ariaLabel: 'More page actions',
-    items: () => [
-      { value: 'export', label: 'Export page…', svg: 'download' },
-      { value: 'import', label: 'Import page here…', svg: 'upload' },
-    ],
+    items: () => {
+      const note = currentNote();
+      return [
+        { value: 'export', label: 'Export page…', svg: 'download' },
+        ...(canEdit() ? [{ value: 'import', label: 'Import page here…', svg: 'upload' as const }] : []),
+        ...(note && moveTargets(note.id).length ? [{ value: 'move', label: 'Move to workspace…', svg: 'move' as const }] : []),
+      ];
+    },
     onSelect: action => {
       const note = currentNote();
       if (action === 'export' && note) openExport(note.id);
       else if (action === 'import') openImport(note?.id ?? null);
+      else if (action === 'move' && note) showMove(note.id);
     },
   });
   $('btn-theme').onclick = () => { settings.dark = !settings.dark; saveSettings(); renderAll(); };
@@ -657,10 +688,10 @@ export function wireApp(): void {
     if (first) focusBlock(first.id);
   });
   window.addEventListener('resize', () => autoResize(title));
-  $('btn-add-block').onclick = () => { const note = currentNote(); if (note) addBlockAtEnd(note); };
+  $('btn-add-block').onclick = () => { const note = currentNote(); if (note && canEdit(note.id)) addBlockAtEnd(note); };
   $('btn-pin-sticky').onclick = () => {
     const note = currentNote();
-    if (!note) return;
+    if (!note || !canEdit(note.id)) return;
     note.isSticky = !note.isSticky;
     store.touchNote(note);
     renderAll();

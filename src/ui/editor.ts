@@ -155,6 +155,39 @@ export function renderEditor(): void {
   stickyColorDropdown().setValue(note.stickyColor);
 
   blocksEl.replaceChildren(...note.blocks.map(block => renderBlock(note, block)));
+
+  // Viewers of a shared workspace can read (and copy) but not change anything.
+  const readOnly = store.isReadOnly(store.spaceOf(note.id));
+  container.classList.toggle('read-only', readOnly);
+  actions.classList.toggle('read-only', readOnly);
+  $('readonly-banner').classList.toggle('hidden', !readOnly);
+  title.readOnly = readOnly;
+  if (readOnly) lockEditing(blocksEl);
+}
+
+/** Makes rendered blocks read-only: text can be selected and copied, nothing can be typed or toggled. */
+function lockEditing(root: HTMLElement): void {
+  for (const node of root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea')) {
+    if (node.type === 'checkbox') node.disabled = true;
+    else { node.readOnly = true; node.placeholder = ''; }
+  }
+  for (const node of root.querySelectorAll<HTMLElement>('[contenteditable="true"]')) node.contentEditable = 'false';
+}
+
+/** Keys that only move, select or copy, which a viewer may use in a read-only page. */
+function readingKey(e: KeyboardEvent): boolean {
+  if (e.key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown', 'Tab', 'Escape', 'Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return true;
+  return (e.ctrlKey || e.metaKey) && ['c', 'a', 'f'].includes(e.key.toLowerCase());
+}
+
+/** Read-only pages: block keys (Enter, Backspace, /…), paste, drop and cut before the editor sees them. */
+export function wireReadOnlyGuard(): void {
+  const container = $('note-container');
+  const readOnly = () => container.classList.contains('read-only');
+  container.addEventListener('keydown', e => { if (readOnly() && !readingKey(e)) { e.preventDefault(); e.stopPropagation(); } }, true);
+  for (const type of ['paste', 'drop', 'cut'] as const) {
+    container.addEventListener(type, e => { if (readOnly()) { e.preventDefault(); e.stopPropagation(); } }, true);
+  }
 }
 
 function renderMeta(note: Note): void {
@@ -172,6 +205,11 @@ function renderMeta(note: Note): void {
     },
   });
   const info = el('span', { className: 'meta-info', text: `Updated ${new Date(note.updatedAt).toLocaleString()} • ${note.blocks.length} block(s)` });
+  if (store.isReadOnly(store.spaceOf(note.id))) {
+    const { icon, label } = CATEGORIES[note.category];
+    $('note-meta').replaceChildren(el('span', { className: 'meta-category', text: `${icon} ${label}` }), info);
+    return;
+  }
   $('note-meta').replaceChildren(category.el, info);
 }
 
@@ -353,6 +391,12 @@ function toolButton(text: string, label: string, onclick: () => void): HTMLButto
   return b;
 }
 
+/** Marks a control that changes the page (hidden on read-only pages). */
+function editOnly<T extends HTMLElement>(node: T): T {
+  node.classList.add('edit-only');
+  return node;
+}
+
 function renderFields(note: Note, block: FieldsBlock, body: HTMLElement): void {
   const group = el('div', { className: 'fg' });
   for (const f of block.fields) group.append(renderFieldRow(note, block, f));
@@ -423,7 +467,7 @@ function renderFieldRow(note: Note, block: FieldsBlock, f: Field): HTMLElement {
   if (secret) tools.append(toolButton(revealed ? '🙈' : '👁', revealed ? 'Hide value' : 'Reveal value', () => setRevealed(f.id, !revealed)));
   tools.append(
     toolButton('📋', 'Copy value', () => void copyText(f.value, f.label || 'Value', secret)),
-    toolButton('✕', 'Remove field', () => void confirmRemoveField(note, block, f)),
+    editOnly(toolButton('✕', 'Remove field', () => void confirmRemoveField(note, block, f))),
   );
 
   row.append(label, value, tools);
@@ -485,10 +529,10 @@ function renderTotpRow(note: Note, block: FieldsBlock, f: Field, row: HTMLElemen
     } else {
       value.append(createTotpDisplay(params, name));
     }
-    tools.append(toolButton('✎', 'Edit secret key', () => editTotp(f.id)));
+    tools.append(editOnly(toolButton('✎', 'Edit secret key', () => editTotp(f.id))));
     if (params) tools.append(toolButton('📋', 'Copy current code', () => void copyTotpCode(name, params)));
   }
-  tools.append(toolButton('✕', 'Remove field', () => void confirmRemoveField(note, block, f)));
+  tools.append(editOnly(toolButton('✕', 'Remove field', () => void confirmRemoveField(note, block, f))));
   row.append(label, value, tools);
   return row;
 }

@@ -156,7 +156,7 @@ function wireStartScreen(): void {
       selected = path;
       store.unlock(v.header, v.vaultKey, []);
       session.attach(path, null, null);
-      welcomeNotes().forEach(store.addNote);
+      welcomeNotes().forEach(n => store.addNote(n));
       await store.flush();
       $('recovery-key-text').textContent = v.recoveryKey;
       showPanel('recovery');

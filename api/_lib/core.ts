@@ -6,10 +6,15 @@ import { isEnvelope, isVaultHeader } from '../../src/shapes.js';
 import type { KdfParams } from '../../src/crypto.js';
 import type { Envelope } from '../../src/envelope.js';
 import type { VaultHeader } from '../../src/vault.js';
+import { memoryWorkspaceRepo, type WorkspaceRepo } from './workspaces.js';
 
-export interface Account { id: string; username: string; header: VaultHeader; authHash: string; recoveryAuthHash: string }
+export interface Account {
+  id: string; username: string; header: VaultHeader; authHash: string; recoveryAuthHash: string;
+  /** X25519 public key for shared workspaces (null until the account first sets one up). */
+  publicKey?: string | null;
+}
 
-export interface Repo {
+export interface Repo extends WorkspaceRepo {
   /** False for the in-memory development store (data disappears on restart). */
   readonly persistent: boolean;
   findAccount(username: string): Promise<Account | null>;
@@ -187,7 +192,10 @@ export async function sync(repo: Repo, accountId: string, body: unknown): Promis
   if (b.header !== undefined) {
     const next = header(b.header);
     const profileOnly = next.vaultId === current.vaultId && next.updatedAt > current.updatedAt
-      && same(next.kdf, current.kdf) && same(next.passwordWrap, current.passwordWrap) && same(next.recoveryWrap, current.recoveryWrap);
+      && same(next.kdf, current.kdf) && same(next.passwordWrap, current.passwordWrap) && same(next.recoveryWrap, current.recoveryWrap)
+      // The workspace identity is set once: workspace keys are sealed to it, so replacing it (e.g. a
+      // second device setting up at the same time) would lock this account out of its workspaces.
+      && (current.identity ? same(next.identity, current.identity) : !account.publicKey || !next.identity || next.identity.publicKey === account.publicKey);
     if (profileOnly) {
       await repo.updateAccount(account.id, { header: next });
       current = next;
@@ -229,6 +237,7 @@ export function createMemoryRepo(): Repo {
   let rev = 0;
   const byId = (id: string) => [...accounts.values()].find(a => a.id === id) ?? null;
   return {
+    ...memoryWorkspaceRepo(() => accounts.values(), () => ++rev),
     persistent: false,
     findAccount: async u => accounts.get(u) ?? null,
     findAccountById: async id => byId(id),

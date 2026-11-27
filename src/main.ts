@@ -8,6 +8,7 @@ import { wireContextMenus } from './ui/contextMenu';
 import { hydrateIcons } from './ui/dom';
 import { showDesktopStart, wireDesktop } from './ui/desktop';
 import { showFatal, showLockScreen, wireLockScreen } from './ui/lock';
+import { captureJoinLink } from './ui/workspaces';
 
 // Browser storage is per origin. Keep local development on one origin (localhost) so the vault is
 // always found, whichever loopback address was typed or printed.
@@ -31,6 +32,7 @@ async function boot(): Promise<void> {
   wireLockScreen();
   await initCrypto();
   await showLockScreen();
+  captureJoinLink(); // an invite link (#join=…): joined after logging in
 }
 
 if (!DESKTOP && LOOPBACK_ALIASES.has(location.hostname)) {

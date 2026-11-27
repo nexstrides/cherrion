@@ -4,6 +4,7 @@ import { ApiError, api, hasSession } from './api';
 import type { Envelope } from './envelope';
 import * as store from './store';
 import type { VaultHeader } from './vault';
+import * as workspaces from './workspaces';
 
 export type SyncState =
   | { kind: 'idle' }
@@ -101,6 +102,9 @@ async function syncOnce(): Promise<void> {
     const pushHeader = !!local && local.vaultId === res.header.vaultId && local.updatedAt > res.header.updatedAt
       && headerPushedFor !== local.updatedAt;
     if (pushHeader && local) { headerPushedFor = local.updatedAt; store.markHeaderDirty(); }
+    // Shared workspaces (accounts only; an unlinked desktop file never gets here).
+    unreadable += (await workspaces.syncAll()).unreadable;
+    if (store.isHeaderDirty()) scheduleSync(); // e.g. a new workspace identity to upload
     setState(store.unsavedCount() ? { kind: 'idle' } : { kind: 'synced', at: Date.now(), unreadable });
     if (store.unsavedCount() || pushHeader) scheduleSync(); // edited while this round was in flight
   } catch (err) {
@@ -150,5 +154,7 @@ export function stopSync(): void {
   stopTimers();
   since = 0;
   headerPushedFor = 0;
+  workspaces.resetSync();
+  workspaces.reset();
   setState({ kind: 'idle' });
 }

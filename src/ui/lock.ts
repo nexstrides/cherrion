@@ -434,7 +434,7 @@ export function wireLockScreen(): void {
       settings.userName = readProfile(header, vaultKey)?.userName ?? account;
       await startSession(account, session.token, header, vaultKey, notes);
       await migrateLegacyPlaintext();
-      if (!store.activeNotes().length) welcomeNotes().forEach(store.addNote);
+      if (!store.activeNotes().length) welcomeNotes().forEach(n => store.addNote(n));
       await store.flush();
       await sync.syncNow();
       // Only remove the browser copy once it is safely in a real database.

@@ -49,9 +49,10 @@ export const setReauthenticator = (fn: (() => Promise<boolean>) | null): void =>
 let renewing: Promise<boolean> | null = null;
 /** One renewal at a time: requests that fail together wait for the same one. */
 function renewSession(): Promise<boolean> {
+  // Cleared by `.finally` (asynchronous), so the slot never keeps a settled promise (see desktop connect()).
   renewing ??= (async () => {
-    try { return reauthenticate ? await reauthenticate() : false; } catch { return false; } finally { renewing = null; }
-  })();
+    try { return reauthenticate ? await reauthenticate() : false; } catch { return false; }
+  })().finally(() => { renewing = null; });
   return renewing;
 }
 
@@ -114,6 +115,15 @@ export const api = {
     const data = await post('sync', b, true);
     const notes = Array.isArray(data.notes) ? data.notes.filter(isEnvelope) : [];
     return { notes, rev: typeof data.rev === 'number' ? data.rev : b.since, more: data.more === true, header: header(data.header) };
+  },
+  /** Shared workspaces: one endpoint with an `action` (see api/_lib/workspaces.ts). */
+  async workspace(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return post('workspace', body, true);
+  },
+  async wsync(b: { workspaceId: string; since: number; notes: Envelope[] }): Promise<{ notes: Envelope[]; rev: number; more: boolean; epoch: number }> {
+    const data = await post('wsync', b, true);
+    const notes = Array.isArray(data.notes) ? data.notes.filter(isEnvelope) : [];
+    return { notes, rev: typeof data.rev === 'number' ? data.rev : b.since, more: data.more === true, epoch: typeof data.epoch === 'number' ? data.epoch : 1 };
   },
   async logout(): Promise<void> {
     if (!token) return;

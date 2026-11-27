@@ -5,8 +5,8 @@
 // server. A MAC under the vault key stops anyone without the key from swapping in a forged header.
 import {
   DEFAULT_KDF_COST, DecryptError, deriveKey, deriveSubkey, fromHex, mac, newKdfParams, open,
-  openString, randomBytes, randomKey, seal, toB64, toHex, verifyMac, wipe,
-  type KdfParams, type Sealed,
+  openString, randomBytes, randomKey, seal, toB64, toHex, verifyMac, wipe, fromB64,
+  type BoxKeyPair, type KdfParams, type Sealed,
 } from './crypto';
 import { now } from './model';
 
@@ -21,6 +21,11 @@ export interface VaultHeader {
   recoveryWrap: Sealed;
   /** Encrypted Profile (user name). Absent in vaults created before profiles existed. */
   profile?: Sealed;
+  /**
+   * The account's X25519 identity for shared workspaces: the public key, and the private key
+   * encrypted with the vault key. Absent until the account first uses workspaces.
+   */
+  identity?: { publicKey: string; privateKey: Sealed };
   mac: string;
 }
 
@@ -35,6 +40,7 @@ export class WrongSecretError extends Error {
 
 const wrapAad = (vaultId: string, slot: 'password' | 'recovery') => `cherrion/vault/v1/${vaultId}/${slot}`;
 const profileAad = (vaultId: string) => `cherrion/vault/v1/${vaultId}/profile`;
+const identityAad = (vaultId: string, publicKey: string) => `cherrion/vault/v1/${vaultId}/identity/${publicKey}`;
 const RECOVERY_CONTEXT = 'cherrion/recovery/v1';
 const HEADER_MAC_CONTEXT = 'cherrion/header-mac/v1';
 
@@ -48,6 +54,8 @@ function headerMessage(h: UnsignedHeader): string {
   ];
   // Appended only when present, so headers created before profiles existed still verify.
   if (h.profile) parts.push(h.profile.nonce, h.profile.ct);
+  // Same for the workspace identity (tagged, so it can never be confused with the profile parts).
+  if (h.identity) parts.push('identity', h.identity.publicKey, h.identity.privateKey.nonce, h.identity.privateKey.ct);
   return JSON.stringify(parts);
 }
 
@@ -76,6 +84,28 @@ export function setProfile(header: VaultHeader, vaultKey: Uint8Array, profile: P
     ...rest,
     updatedAt: Math.max(now(), header.updatedAt + 1),
     profile: sealProfile(vaultKey, header.vaultId, profile),
+  });
+}
+
+/** The account's workspace identity key pair, or null if it has none yet (or it does not open). */
+export function readIdentity(h: VaultHeader, vaultKey: Uint8Array): BoxKeyPair | null {
+  if (!h.identity) return null;
+  try {
+    const privateKey = open(vaultKey, h.identity.privateKey, identityAad(h.vaultId, h.identity.publicKey));
+    return { publicKey: fromB64(h.identity.publicKey), privateKey };
+  } catch {
+    return null;
+  }
+}
+
+/** Adds a workspace identity (key pair) to the header; the private key is encrypted with the vault key. */
+export function setIdentity(header: VaultHeader, vaultKey: Uint8Array, keyPair: BoxKeyPair): VaultHeader {
+  const { mac: _old, ...rest } = header;
+  const publicKey = toB64(keyPair.publicKey);
+  return sign(vaultKey, {
+    ...rest,
+    updatedAt: Math.max(now(), header.updatedAt + 1),
+    identity: { publicKey, privateKey: seal(vaultKey, keyPair.privateKey, identityAad(header.vaultId, publicKey)) },
   });
 }
 

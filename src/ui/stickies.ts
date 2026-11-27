@@ -29,6 +29,7 @@ export function renderStickyBoard(): void {
 function stickyCard(note: Note): HTMLElement {
   const title = el('input', { className: 'sticky-card-title', value: note.title || 'Untitled', type: 'text' });
   title.setAttribute('aria-label', 'Sticky title');
+  title.readOnly = store.isReadOnly(store.spaceOf(note.id));
   title.onchange = () => { note.title = title.value; store.touchNote(note); render.tree(); };
 
   const head = el('div', { className: 'sticky-card-head' },
@@ -38,7 +39,8 @@ function stickyCard(note: Note): HTMLElement {
   );
 
   let body: HTMLElement;
-  if (isPlainTextEditable(note)) {
+  const writable = !store.isReadOnly(store.spaceOf(note.id));
+  if (writable && isPlainTextEditable(note)) {
     const area = el('textarea', { className: 'sticky-card-body', value: noteToPlainText(note) });
     area.setAttribute('aria-label', 'Sticky text');
     area.addEventListener('input', () => { note.blocks = plainTextToBlocks(area.value); store.touchNote(note); });
@@ -52,10 +54,10 @@ function stickyCard(note: Note): HTMLElement {
       className: 'sticky-mini', type: 'button', title: 'Open this page in the editor',
       onclick: () => { selectNote(note.id); ui.activeTab = 'tree'; render.all(); },
     }, svgIcon(ICONS.edit), 'Open'),
-    el('button', {
+    ...(!writable ? [] : [el('button', {
       className: 'sticky-mini sticky-unpin', type: 'button', title: 'Remove from the sticky board (the page is kept)',
       onclick: () => { note.isSticky = false; store.touchNote(note); render.all(); },
-    }, svgIcon(ICONS.unpin), 'Unpin'),
+    }, svgIcon(ICONS.unpin), 'Unpin')]),
   );
 
   return el('div', { className: `sticky-card sticky-${note.stickyColor}` }, head, body, foot);
@@ -64,9 +66,11 @@ function stickyCard(note: Note): HTMLElement {
 export async function openFloatingSticky(noteId: string): Promise<void> {
   const note = store.getNote(noteId);
   if (!note || note.deleted) return;
-  note.isSticky = true;
-  store.touchNote(note);
-  render.all();
+  if (!store.isReadOnly(store.spaceOf(note.id)) && !note.isSticky) {
+    note.isSticky = true;
+    store.touchNote(note);
+    render.all();
+  }
 
   let win: Window | null;
   try {
@@ -111,7 +115,9 @@ export async function openFloatingSticky(noteId: string): Promise<void> {
   });
 
   const textStyle = 'flex:1;border:none;background:transparent;outline:none;font-family:inherit;font-size:14px;line-height:1.5;color:#222;';
-  if (isPlainTextEditable(note)) {
+  const writable = !store.isReadOnly(store.spaceOf(note.id));
+  titleInput.readOnly = !writable;
+  if (writable && isPlainTextEditable(note)) {
     const area = doc.createElement('textarea');
     area.value = noteToPlainText(note);
     area.placeholder = 'Jot quick thoughts...';

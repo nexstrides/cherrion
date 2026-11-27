@@ -190,6 +190,9 @@
         </div>
       </div>
 
+      <!-- Personal vault / shared workspaces (filled in by ui/workspaces.ts; hidden for unlinked desktop files). -->
+      <div id="space-switcher" class="space-switcher hidden"></div>
+
       <div class="search-box">
         <input id="search-input" type="search" placeholder="Search tree & blocks (Ctrl+K)..." aria-label="Search notes" />
         <div id="category-filter"></div>
@@ -243,6 +246,7 @@
         </div>
 
         <div id="note-container" class="note-container hidden">
+          <p id="readonly-banner" class="notice readonly-banner hidden" role="note"><span data-icon="eye"></span><span id="readonly-text">You can view this workspace but not change it.</span></p>
           <textarea id="note-title" class="note-title" rows="1" placeholder="Untitled note" aria-label="Title"></textarea>
           <div class="note-meta" id="note-meta"></div>
           <div id="blocks-container" class="blocks-container"></div>
@@ -498,6 +502,17 @@
           <button type="submit" class="primary-btn"><span data-icon="upload"></span>Import</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Shared workspaces: create, join, invitations and settings (contents built by ui/workspaces.ts). -->
+  <div id="workspace-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="workspace-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="workspace-title">Workspace</h3>
+        <button id="btn-close-workspace" aria-label="Close">✕</button>
+      </div>
+      <div id="workspace-body"></div>
     </div>
   </div>
 

@@ -49,4 +49,16 @@ describe('session renewal', () => {
     const err = await api.sync({ since: 0, notes: [] }).catch(e => e as ApiError);
     expect(err).toBeInstanceOf(ApiError);
   });
+
+  it('keeps renewing after an attempt that finished at once', async () => {
+    setTransport(fakeServer([]));
+    setSession('stale');
+    // No way to renew: this attempt ends without waiting for anything.
+    await expect(api.sync({ since: 0, notes: [] })).rejects.toMatchObject({ status: 401 });
+    // A later renewal must still run (a settled attempt used to stay in place and block every later one).
+    let renewals = 0;
+    setReauthenticator(async () => { renewals++; setSession('fresh'); return true; });
+    expect((await api.sync({ since: 0, notes: [] })).rev).toBe(7);
+    expect(renewals).toBe(1);
+  });
 });

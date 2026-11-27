@@ -658,3 +658,70 @@ body.no-popout #btn-popout, body.no-popout .sticky-popout { display: none !impor
   .search-box input, .fg-input, .fg-label, .field-label input, .block-input, .sticky-card-body, .sticky-card-title { font-size: 16px; }
   .tree-row { padding: 8px 6px; }
 }
+
+/* ---- Shared workspaces ---- */
+.space-switcher { padding: 8px 10px 0; }
+.space-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit;
+}
+.space-btn:hover, .space-btn[aria-expanded="true"] { background: var(--bg-hover); }
+.space-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.space-icon {
+  flex: none; width: 26px; height: 26px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg)); color: var(--accent);
+}
+.space-icon .icon { width: 15px; height: 15px; }
+.space-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.space-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.space-role { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.space-badge {
+  flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
+}
+.space-btn .dd-caret { flex: none; width: 14px; height: 14px; color: var(--text-muted); }
+
+/* Viewers: the page can be read and copied, not changed. */
+.readonly-banner { display: flex; align-items: center; gap: 8px; }
+.readonly-banner .icon { width: 16px; height: 16px; flex: none; color: var(--text-muted); }
+.note-container.read-only .block-controls,
+.note-container.read-only .add-block-hint,
+.note-container.read-only .fg-actions,
+.note-container.read-only .table-tools,
+.note-container.read-only .edit-only,
+.note-actions.read-only #btn-pin-sticky,
+.note-actions.read-only #sticky-color-select,
+.note-actions.read-only #btn-add-child,
+.note-actions.read-only #btn-delete-note { display: none; }
+.note-container.read-only .image-caption:placeholder-shown { display: none; }
+.meta-category { font-size: 13px; color: var(--text-muted); }
+
+/* Workspace dialog */
+.ws-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ws-row > input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; }
+.ws-row > input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ws-row .primary-btn, .ws-row .action-btn { flex: none; white-space: nowrap; }
+.ws-grow { flex: 1; min-width: 0; }
+.ws-list { list-style: none; margin: 0 0 10px; padding: 0; border: 1px solid var(--border); border-radius: 8px; }
+.ws-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+.ws-item + .ws-item { border-top: 1px solid var(--border); }
+.ws-who { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.ws-name { min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-role { flex: none; font-size: 12.5px; color: var(--text-muted); }
+.ws-pending-icon { flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); }
+.ws-pending-icon .icon { width: 16px; height: 16px; }
+.ws-pending-title { margin: 4px 0 6px; }
+.ws-x {
+  flex: none; width: 26px; height: 26px; border: none; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.ws-x:hover { background: color-mix(in srgb, var(--danger) 12%, var(--bg)); color: var(--danger); }
+.ws-x:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.role-dropdown .dropdown-trigger { padding: 5px 8px; font-size: 13px; }
+.ws-link .notice { margin-bottom: 10px; }
+#workspace-body .section-title { font-weight: 600; }
+/* Confirmations opened from the workspace dialog appear above it. */
+#confirm-modal { z-index: 1100; }
+@media (max-width: 520px) {
+  .ws-row { flex-wrap: wrap; }
+  .ws-row > input { flex-basis: 100%; }
+}

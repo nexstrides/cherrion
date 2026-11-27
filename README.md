@@ -22,6 +22,7 @@ Below is the **complete, structured project documentation** formatted so you can
 | **6** | **Encrypted Vault & Templates (Step 1)** | Moved to TypeScript + Vite. Notes are encrypted on the device (Argon2id + XChaCha20-Poly1305 via libsodium) and stored in IndexedDB; the sync server and backups only ever see ciphertext. Added a vault password with a recovery key, auto-lock, a new-page template picker (Email account, Website login, Secure note, Meeting), categories, and field-group / secret-field blocks. |
 | **7** | **Online Version on Vercel + Postgres** | The web app became online-only: username/password accounts on a Vercel serverless API with Postgres (Neon), automatic encrypted saving and multi-device sync, offline edits kept until reconnect, password reset with the recovery key, and a one-time move of the vault saved in the browser into the account. |
 | **8** | **Offline Desktop App (Python + SQLite)** | A Windows desktop app (`desktop/`, Python + pywebview, packaged as one `Cherrion.exe`) that keeps each vault in one encrypted `.cherrion` SQLite file, like a CherryTree document. Works fully offline; a file can be linked to an online account (sync URL) and syncs with the web version. GitHub Actions builds the exe on every push and publishes a release for each `v*` tag. |
+| **9** | **Shared Workspaces** | Separate sets of pages shared with other accounts (Owner / Editor / Viewer), invited by username or by a single-use link. Each workspace has its own key, sealed to each member's public key, so the server still sees only ciphertext. Removing a member replaces the key. Pages move between Personal and a workspace. |
 
 ---
 
@@ -93,6 +94,7 @@ Below is the **complete, structured project documentation** formatted so you can
 * **Field groups:** + Field, + Secret field, + Secret note (hidden multi-line text) and + 2FA code.
 * **Categories:** Each note has a category, shown as a tree icon and usable as a sidebar filter.
 * **Field Groups & Secret Fields:** Labelled inputs that can be added anywhere with `/` (**Field group**, **Secret field**). Secret values are masked until revealed, excluded from search, masked in stickies and pop-outs, and copied with a 30-second clipboard clear.
+* **Shared Workspaces (`src/workspaces.ts`, `src/ui/workspaces.ts`, `api/_lib/workspaces.ts`):** The space menu above the search box switches between **Personal** and each workspace. Owners invite by username (the invitee accepts or declines) or by a **single-use invite link** valid for 7 days; the secret part after `#` never reaches the server. Roles: **Owner** (manage people, delete), **Editor** (change pages), **Viewer** (read and copy only). Every account gets an X25519 key pair: the private key is encrypted in the vault header, the public key is published. Each workspace has a random key per *epoch*, sealed to every member; the workspace name and pages are encrypted with it. Removing someone creates a new epoch with a new key. **Move to workspace…** (⋯ menu or right-click) moves a page and its sub-pages between spaces. Safety codes (hover a member) let two people check that nobody swapped their keys. Not available for desktop files that are not linked to an account.
 * **Migration:** Notes from the earlier unencrypted version (in this browser, in old JSON backups, or in an old sync room) are encrypted on import, and the plaintext browser copy is removed.
 
 ---
@@ -103,6 +105,7 @@ Below is the **complete, structured project documentation** formatted so you can
    * `cherrion_accounts`: username, the key-wrapped vault header, and SHA-256 hashes of the login and recovery auth keys
    * `cherrion_notes`: one encrypted envelope per note (only id, timestamp and deleted flag are readable)
    * `cherrion_sessions`: hashed session tokens (12 hours)
+   * `cherrion_workspaces`, `cherrion_workspace_members`, `cherrion_workspace_invites`, `cherrion_workspace_notes`: workspaces with their encrypted names, each member's role and sealed keys, pending invitations (invite links store only a hash of their secret), and encrypted workspace pages. `cherrion_accounts.public_key` holds each account's workspace public key.
 2. **Browser:** nothing but non-secret preferences in `localStorage` (`cherrion_settings_v1`: theme, auto-logout, last username). Decrypted notes exist only in memory while you are logged in.
 3. **Manual Backups:** `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export encrypted backup**; only your password or recovery key can open it.
 4. **Desktop app:** each vault is one `.cherrion` file wherever you save it (a SQLite database holding the key-wrapped header and the encrypted notes, plus which notes are not yet synced). The app's own folder `%APPDATA%\Cherrion` holds only the recent-files list (`desktop.json`) and window preferences (`WebView\`).
@@ -130,6 +133,7 @@ Below is the **complete, structured project documentation** formatted so you can
 3. Forgot the password? **Use your recovery key** on the login screen.
 4. Sessions last 12 hours and are renewed automatically while you work. If that isn't possible (for example, the password was changed on another device), Cherrion asks for your password without logging you out, so nothing is lost.
 5. Offline: keep the tab open. The status shows **Offline · N unsaved** and the changes are saved when you reconnect (closing the tab first asks for confirmation).
+6. Share with others: open the space menu (above the search box) → **New workspace…**, then invite people by username or with an invite link in **Workspace settings…**. Invitations appear in the invitee's space menu with a red badge.
 
 ### Step 5: Use Blocks & Sticky Notes
 1. Click inside any block and type `/` to insert headings, to-dos, callouts, quotes, code, dividers, pages, field groups, secret fields or 2FA codes.
