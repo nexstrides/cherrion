@@ -3,7 +3,7 @@
 // in an outbox, which sync.ts pushes to the server shortly after. The desktop build also writes every
 // envelope to its vault file through a Journal (see src/desktop/session.ts).
 import { api } from './api';
-import { sealTo, wipe } from './crypto';
+import { open, seal, sealTo, wipe, type Sealed } from './crypto';
 import { decryptNote, decryptWorkspaceNote, encryptNote, encryptWorkspaceNote, isEnvelope, type Envelope } from './envelope';
 import { now, uid, type Note } from './model';
 import {
@@ -32,7 +32,18 @@ let undecryptable = 0;
 // note is encrypted with its space's key (the vault key, or the workspace's newest key).
 
 export const PERSONAL = '';
-interface Space { keys: Map<number, Uint8Array>; epoch: number; readOnly: boolean }
+/**
+ * `kept`: the desktop vault file keeps a copy of this workspace (one this account owns).
+ * `hideSecrets`: viewers may not read secret fields, so they are sealed with the secrets keys
+ * (`skeys`, by key number), which owners and editors hold.
+ */
+interface Space {
+  keys: Map<number, Uint8Array>; epoch: number; readOnly: boolean; kept: boolean;
+  skeys: Map<number, Uint8Array>; hideSecrets: boolean;
+}
+/** A workspace's secrets keys (none for viewers) and whether secret fields are hidden from viewers. */
+export interface SpaceSecrets { keys: Map<number, Uint8Array>; hide: boolean }
+const NO_SECRETS = (): SpaceSecrets => ({ keys: new Map(), hide: false });
 const spaces = new Map<string, Space>();
 /** Workspace notes only; a note not listed here is personal. */
 const noteSpace = new Map<string, string>();
@@ -51,14 +62,18 @@ export function setActiveSpace(id: string): void {
   activeSpace = hasSpace(id) ? id : PERSONAL;
 }
 
-/** Adds or updates a workspace (its keys by number, the newest number, and whether it is read-only). */
-export function setSpace(id: string, keys: Map<number, Uint8Array>, epoch: number, readOnly: boolean): void {
+/** Adds or updates a workspace (its keys by number, the newest number, whether it is read-only, and its secrets keys). */
+export function setSpace(id: string, keys: Map<number, Uint8Array>, epoch: number, readOnly: boolean,
+  secrets: SpaceSecrets = NO_SECRETS()): void {
   const existing = spaces.get(id);
   if (existing) {
     for (const [k, key] of keys) if (!existing.keys.has(k)) existing.keys.set(k, key); else wipe(key);
-    const rekeyed = epoch !== existing.epoch;
+    for (const [k, key] of secrets.keys) if (!existing.skeys.has(k)) existing.skeys.set(k, key); else wipe(key);
+    // A new key number, or a change to who may read secret fields: unsent edits are sealed again.
+    const rekeyed = epoch !== existing.epoch || secrets.hide !== existing.hideSecrets;
     existing.epoch = epoch;
     existing.readOnly = readOnly;
+    existing.hideSecrets = secrets.hide;
     // Unsent edits: a viewer cannot save them; after a key change they are sealed again with the new key.
     for (const nid of outbox) {
       if (noteSpace.get(nid) !== id) continue;
@@ -67,8 +82,76 @@ export function setSpace(id: string, keys: Map<number, Uint8Array>, epoch: numbe
     }
     if (readOnly) for (const nid of pending) if (noteSpace.get(nid) === id) pending.delete(nid);
   } else {
-    spaces.set(id, { keys, epoch, readOnly });
+    spaces.set(id, { keys, epoch, readOnly, kept: false, skeys: secrets.keys, hideSecrets: secrets.hide });
   }
+}
+
+// ---- Owned workspaces kept in the desktop vault file ----
+
+const spaceRecordAad = (id: string) => `cherrion/file-space/v1/${header?.vaultId ?? ''}/${id}`;
+
+/** True when this build keeps workspaces in a file (the desktop app with a file open). */
+export const canKeepSpaces = (): boolean => !!journal?.space;
+
+/**
+ * Desktop: keeps a copy of a workspace in the vault file (`record`: its details, sealed here with the
+ * vault key), or removes the copy and its pages (`record` null). The first time, every page already
+ * loaded is written too; after that, pages follow every change like personal notes.
+ */
+export function keepSpace(id: string, record: unknown): void {
+  if (!journal?.space || !vaultKey) return;
+  const s = spaces.get(id);
+  if (record === null) {
+    if (s) s.kept = false;
+    journal.space(id, null);
+    return;
+  }
+  journal.space(id, seal(vaultKey, JSON.stringify(record), spaceRecordAad(id)));
+  if (s && !s.kept) {
+    s.kept = true;
+    const list = [...envelopes.values()].filter(env => spaceOf(env.id) === id);
+    const unsent = list.filter(env => outbox.has(env.id));
+    const sent = list.filter(env => !outbox.has(env.id));
+    if (sent.length) journal.put(sent, false, id);
+    if (unsent.length) journal.put(unsent, true, id);
+  }
+}
+
+/** Reads a workspace record from the vault file (null if it is not this vault's or is damaged). */
+export function openSpaceRecord(id: string, record: unknown): unknown {
+  if (!vaultKey || typeof record !== 'object' || record === null) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(open(vaultKey, record as Sealed, spaceRecordAad(id))));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Loads a workspace kept in the vault file (opening the file, possibly offline): its pages, with
+ * the ones not yet on the server queued again. Nothing is written back to the file.
+ */
+export function loadKeptSpace(id: string, keys: Map<number, Uint8Array>, epoch: number, readOnly: boolean,
+  items: { envelope: Envelope; dirty: boolean }[], secrets: SpaceSecrets = NO_SECRETS()): void {
+  setSpace(id, keys, epoch, readOnly, secrets);
+  const ws = spaces.get(id)!;
+  ws.kept = true;
+  const ids: string[] = [];
+  for (const { envelope: env, dirty } of items) {
+    if (notes[env.id] && spaceOf(env.id) !== id) continue;
+    const wk = env.k ? ws.keys.get(env.k) : undefined;
+    try {
+      if (!wk) throw new Error('No key for this page');
+      notes[env.id] = decryptWorkspaceNote(wk, id, env, ws.skeys);
+      noteSpace.set(env.id, id);
+      envelopes.set(env.id, env);
+      if (dirty && !readOnly) outbox.add(env.id);
+      ids.push(env.id);
+    } catch {
+      undecryptable++;
+    }
+  }
+  if (ids.length) emit('external', ids);
 }
 
 /** Forgets a workspace that was left, deleted or that this account was removed from. */
@@ -83,7 +166,7 @@ export function dropSpace(id: string): void {
     pending.delete(nid);
     noteSpace.delete(nid);
   }
-  for (const key of space.keys.values()) wipe(key);
+  for (const key of [...space.keys.values(), ...space.skeys.values()]) wipe(key);
   spaces.delete(id);
   if (activeSpace === id) activeSpace = PERSONAL;
   emit('external', ids);
@@ -102,10 +185,13 @@ const lockListeners = new Set<() => void>();
  * `dirty` means "not yet on the sync server". The web build has no journal: the server is the store.
  */
 export interface Journal {
-  put(envelopes: Envelope[], dirty: boolean): void;
+  /** `space`: a kept workspace's pages (personal notes when absent). */
+  put(envelopes: Envelope[], dirty: boolean, space?: string): void;
   /** The server stored these exact versions. */
-  clean(envelopes: Envelope[]): void;
+  clean(envelopes: Envelope[], space?: string): void;
   header(h: VaultHeader): void;
+  /** A workspace kept in the file: its sealed record, or null to remove it and its pages. */
+  space?(id: string, record: Sealed | null): void;
 }
 let journal: Journal | null = null;
 export const setJournal = (j: Journal | null): void => { journal = j; };
@@ -146,6 +232,9 @@ export const allNotes = (): Note[] => Object.values(notes).filter(inActive);
 /** Live notes of the active space. */
 export const activeNotes = (): Note[] => Object.values(notes).filter(n => !n.deleted && inActive(n));
 export const getNote = (id: string | null): Note | undefined => (id ? notes[id] : undefined);
+/** True when a live page in any space (personal or a workspace) shows this attached file. */
+export const fileInUse = (fileId: string): boolean =>
+  Object.values(notes).some(n => !n.deleted && n.blocks.some(b => b.type === 'file' && b.fileId === fileId));
 /** Changes not yet saved on the server (edits made offline, or in the last moment). */
 export const unsavedCount = (): number => new Set([...outbox, ...pending]).size;
 
@@ -183,7 +272,7 @@ export async function lock(): Promise<void> {
   envelopes = new Map();
   outbox.clear();
   pending.clear();
-  for (const space of spaces.values()) for (const key of space.keys.values()) wipe(key);
+  for (const space of spaces.values()) for (const key of [...space.keys.values(), ...space.skeys.values()]) wipe(key);
   spaces.clear();
   noteSpace.clear();
   activeSpace = PERSONAL;
@@ -238,6 +327,26 @@ export function moveToSpace(rootId: string, target: string): string {
   return renamed.get(rootId)!;
 }
 
+/**
+ * Saves every page of a workspace again (with a new time, so the server replaces its copies), sealed
+ * with the current key and rule for secret fields. Used after the owner lets viewers see secret
+ * fields or stops them. Returns how many pages were queued.
+ */
+export function resealSpace(id: string): number {
+  const s = spaces.get(id);
+  if (!s || s.readOnly) return 0;
+  const t = now();
+  const ids: string[] = [];
+  for (const n of Object.values(notes)) {
+    if (n.deleted || spaceOf(n.id) !== id) continue;
+    notes[n.id] = { ...n, updatedAt: Math.max(t, n.updatedAt + 1) };
+    queue(n.id);
+    ids.push(n.id);
+  }
+  if (ids.length) emit('external', ids);
+  return ids.length;
+}
+
 /** Soft-deletes a note and its descendants. Tombstones keep no content, so deleted secrets do not linger. */
 export function deleteNoteTree(id: string): string[] {
   const ids = [id];
@@ -279,6 +388,7 @@ async function encryptPending(): Promise<void> {
   const ids = [...pending];
   pending.clear();
   const sealed: Envelope[] = [];
+  const keptSealed = new Map<string, Envelope[]>();
   for (const id of ids) {
     const note = notes[id];
     if (!note) continue;
@@ -291,13 +401,23 @@ async function encryptPending(): Promise<void> {
       const s = spaces.get(space);
       const wk = s?.keys.get(s.epoch);
       if (!s || !wk) continue;
-      env = encryptWorkspaceNote(wk, s.epoch, space, note);
+      const sk = s.hideSecrets ? s.skeys.get(s.epoch) : undefined;
+      if (s.hideSecrets && !sk) {
+        // Without the secrets key this page cannot be sealed correctly: keep the edit until it arrives.
+        console.warn('No secrets key for this workspace yet; the edit waits.');
+        pending.add(id);
+        continue;
+      }
+      env = encryptWorkspaceNote(wk, s.epoch, space, note, sk ? { s: s.epoch, key: sk } : null);
+      if (s.kept) keptSealed.set(space, [...(keptSealed.get(space) ?? []), env]);
     }
     envelopes.set(id, env);
     outbox.add(id);
   }
-  // Only the personal vault is kept in the desktop vault file; workspaces are online only.
+  // The desktop vault file keeps the personal vault and the workspaces this account owns; other
+  // workspaces are online only.
   if (sealed.length) journal?.put(sealed, true);
+  for (const [space, list] of keptSealed) journal?.put(list, true, space);
   persisted();
 }
 
@@ -313,6 +433,12 @@ export function confirmSent(sent: Envelope[]): void {
   for (const env of confirmed) outbox.delete(env.id);
   const personal = confirmed.filter(env => spaceOf(env.id) === PERSONAL);
   if (personal.length) journal?.clean(personal);
+  const kept = new Map<string, Envelope[]>();
+  for (const env of confirmed) {
+    const space = spaceOf(env.id);
+    if (space !== PERSONAL && spaces.get(space)?.kept) kept.set(space, [...(kept.get(space) ?? []), env]);
+  }
+  for (const [space, list] of kept) journal?.clean(list, space);
 }
 
 const personalEnvelopes = () => [...envelopes.values()].filter(env => spaceOf(env.id) === PERSONAL);
@@ -359,7 +485,7 @@ export function applyEnvelopes(list: Envelope[], upload = false, space: string =
       if (ws) {
         const wk = env.k ? ws.keys.get(env.k) : undefined;
         if (!wk) throw new Error('No key for this note');
-        notes[env.id] = decryptWorkspaceNote(wk, space, env);
+        notes[env.id] = decryptWorkspaceNote(wk, space, env, ws.skeys);
         noteSpace.set(env.id, space);
       } else {
         notes[env.id] = decryptNote(key, env);
@@ -374,6 +500,7 @@ export function applyEnvelopes(list: Envelope[], upload = false, space: string =
     }
   }
   if (accepted.length && space === PERSONAL) journal?.put(accepted, upload);
+  else if (accepted.length && ws?.kept) journal?.put(accepted, false, space);
   if (ids.length) {
     emit('external', ids);
     if (upload) persisted();

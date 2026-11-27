@@ -75,6 +75,22 @@ export function createPgRepo(connectionString: string): Repo {
       primary key (workspace_id, id)
     )`,
     sql`create index if not exists cherrion_workspace_notes_rev on cherrion_workspace_notes (workspace_id, rev)`,
+    // Secret fields hidden from viewers (secrets keys for owners and editors)
+    sql`alter table cherrion_workspaces add column if not exists viewer_secrets boolean not null default true`,
+    sql`alter table cherrion_workspace_members add column if not exists skeys jsonb not null default '{}'::jsonb`,
+    sql`alter table cherrion_workspace_invites add column if not exists skeys jsonb`,
+    // File attachments: encrypted chunks (see files.ts)
+    sql`create table if not exists cherrion_files (
+      id uuid not null,
+      idx integer not null,
+      count integer not null,
+      owner_id uuid not null references cherrion_accounts(id) on delete cascade,
+      nonce text not null,
+      ct text not null,
+      created_at timestamptz not null default now(),
+      primary key (id, idx)
+    )`,
+    sql`create index if not exists cherrion_files_owner on cherrion_files (owner_id)`,
     // Admin dashboard: last seen, connection history (30 days), owner recovery (opt-in escrow),
     // recovery requests, reset codes, admin sessions and small settings.
     sql`alter table cherrion_accounts add column if not exists last_seen_at timestamptz`,
@@ -122,15 +138,17 @@ export function createPgRepo(connectionString: string): Repo {
   });
   const toWorkspace = (r: Row): Workspace => ({
     id: String(r.id), meta: r.meta as WorkspaceMeta, epoch: Number(r.epoch), createdBy: String(r.created_by ?? ''),
+    viewerSecrets: r.viewer_secrets !== false,
   });
   const toMember = (r: Row): Member => ({
     workspaceId: String(r.workspace_id), accountId: String(r.account_id), role: r.role as Role, keys: r.keys as SealedKeys,
+    skeys: (r.skeys ?? {}) as SealedKeys,
   });
   const toInvite = (r: Row): Invite => ({
     id: String(r.id), workspaceId: String(r.workspace_id), role: r.role as Role,
     inviteeId: r.invitee_id ? String(r.invitee_id) : null, payload: r.payload as Invite['payload'],
     authHash: r.auth_hash ? String(r.auth_hash) : null, createdBy: String(r.created_by ?? ''),
-    expiresAt: new Date(String(r.expires_at)).getTime(),
+    expiresAt: new Date(String(r.expires_at)).getTime(), skeys: (r.skeys ?? null) as SealedKeys | null,
   });
 
   const ms = (v: unknown): number => new Date(String(v)).getTime();
@@ -332,9 +350,10 @@ export function createPgRepo(connectionString: string): Repo {
     async createWorkspace(ws, owner) {
       await db();
       await sql.transaction([
-        sql`insert into cherrion_workspaces (id, meta, epoch, created_by) values (${ws.id}, ${JSON.stringify(ws.meta)}::jsonb, ${ws.epoch}, ${ws.createdBy})`,
-        sql`insert into cherrion_workspace_members (workspace_id, account_id, role, keys)
-          values (${owner.workspaceId}, ${owner.accountId}, ${owner.role}, ${JSON.stringify(owner.keys)}::jsonb)`,
+        sql`insert into cherrion_workspaces (id, meta, epoch, created_by, viewer_secrets)
+          values (${ws.id}, ${JSON.stringify(ws.meta)}::jsonb, ${ws.epoch}, ${ws.createdBy}, ${ws.viewerSecrets})`,
+        sql`insert into cherrion_workspace_members (workspace_id, account_id, role, keys, skeys)
+          values (${owner.workspaceId}, ${owner.accountId}, ${owner.role}, ${JSON.stringify(owner.keys)}::jsonb, ${JSON.stringify(owner.skeys)}::jsonb)`,
       ]);
     },
     async getWorkspace(id) {
@@ -346,7 +365,8 @@ export function createPgRepo(connectionString: string): Repo {
       await db();
       await sql`update cherrion_workspaces set
         meta = coalesce(${f.meta ? JSON.stringify(f.meta) : null}::jsonb, meta),
-        epoch = coalesce(${f.epoch ?? null}::integer, epoch)
+        epoch = coalesce(${f.epoch ?? null}::integer, epoch),
+        viewer_secrets = coalesce(${f.viewerSecrets ?? null}::boolean, viewer_secrets)
         where id = ${id}`;
     },
     async deleteWorkspace(id) {
@@ -355,7 +375,7 @@ export function createPgRepo(connectionString: string): Repo {
     },
     async workspacesOf(accountId) {
       await db();
-      const rows = await sql`select w.*, m.workspace_id, m.account_id, m.role, m.keys
+      const rows = await sql`select w.*, m.workspace_id, m.account_id, m.role, m.keys, m.skeys
         from cherrion_workspace_members m join cherrion_workspaces w on w.id = m.workspace_id
         where m.account_id = ${accountId} order by w.created_at`;
       return rows.map(r => ({ workspace: toWorkspace(r), member: toMember(r) }));
@@ -373,9 +393,9 @@ export function createPgRepo(connectionString: string): Repo {
     },
     async putMember(m) {
       await db();
-      await sql`insert into cherrion_workspace_members (workspace_id, account_id, role, keys)
-        values (${m.workspaceId}, ${m.accountId}, ${m.role}, ${JSON.stringify(m.keys)}::jsonb)
-        on conflict (workspace_id, account_id) do update set role = excluded.role, keys = excluded.keys`;
+      await sql`insert into cherrion_workspace_members (workspace_id, account_id, role, keys, skeys)
+        values (${m.workspaceId}, ${m.accountId}, ${m.role}, ${JSON.stringify(m.keys)}::jsonb, ${JSON.stringify(m.skeys ?? {})}::jsonb)
+        on conflict (workspace_id, account_id) do update set role = excluded.role, keys = excluded.keys, skeys = excluded.skeys`;
     },
     async removeMember(workspaceId, accountId) {
       await db();
@@ -383,9 +403,9 @@ export function createPgRepo(connectionString: string): Repo {
     },
     async createInvite(i) {
       await db();
-      await sql`insert into cherrion_workspace_invites (id, workspace_id, role, invitee_id, payload, auth_hash, created_by, expires_at)
+      await sql`insert into cherrion_workspace_invites (id, workspace_id, role, invitee_id, payload, auth_hash, created_by, expires_at, skeys)
         values (${i.id}, ${i.workspaceId}, ${i.role}, ${i.inviteeId}, ${JSON.stringify(i.payload)}::jsonb, ${i.authHash},
-          ${i.createdBy}, ${new Date(i.expiresAt).toISOString()})`;
+          ${i.createdBy}, ${new Date(i.expiresAt).toISOString()}, ${i.skeys ? JSON.stringify(i.skeys) : null}::jsonb)`;
     },
     async getInvite(id) {
       await db();
@@ -429,6 +449,33 @@ export function createPgRepo(connectionString: string): Repo {
       const rows = await sql`select envelope, rev from cherrion_notes
         where account_id = ${accountId} and rev > ${since} order by rev limit ${limit}`;
       return { notes: rows.map(r => r.envelope as Envelope), revs: rows.map(r => Number(r.rev)) };
+    },
+    async putFileChunk(c) {
+      await db();
+      await sql`insert into cherrion_files (id, idx, count, owner_id, nonce, ct)
+        values (${c.fileId}, ${c.index}, ${c.count}, ${c.ownerId}, ${c.nonce}, ${c.ct})
+        on conflict (id, idx) do update set count = excluded.count, nonce = excluded.nonce, ct = excluded.ct
+        where cherrion_files.owner_id = excluded.owner_id`;
+    },
+    async getFileChunk(fileId, index) {
+      await db();
+      const rows = await sql`select * from cherrion_files where id = ${fileId} and idx = ${index}`;
+      const r = rows[0];
+      return r ? { fileId, index, count: Number(r.count), ownerId: String(r.owner_id), nonce: String(r.nonce), ct: String(r.ct) } : null;
+    },
+    async fileOwner(fileId) {
+      await db();
+      const rows = await sql`select owner_id from cherrion_files where id = ${fileId} limit 1`;
+      return rows[0] ? String(rows[0].owner_id) : null;
+    },
+    async fileCharsOf(ownerId) {
+      await db();
+      const rows = await sql`select coalesce(sum(length(ct)), 0) as chars from cherrion_files where owner_id = ${ownerId}`;
+      return Number(rows[0]?.chars ?? 0);
+    },
+    async deleteFile(fileId) {
+      await db();
+      await sql`delete from cherrion_files where id = ${fileId}`;
     },
   };
 }

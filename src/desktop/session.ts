@@ -11,7 +11,9 @@ import type { Note } from '../model';
 import * as store from '../store';
 import * as sync from '../sync';
 import { authKeyFromKek, createVault, deriveKek, isVaultHeader, recoveryAuthKey, unlockWithKek, type VaultHeader } from '../vault';
-import { py, type FileChanges, type FileSync } from './bridge';
+import * as workspaces from '../workspaces';
+import { serverFiles, setFileStorage, type FileStorage } from '../files';
+import { py, type FileChanges, type FileSync, type KeptSpaces } from './bridge';
 
 export type RemoteState =
   | { kind: 'local' } // not linked to an account
@@ -21,7 +23,7 @@ export type RemoteState =
   | { kind: 'denied'; message: string };
 
 export interface Link { url: string; username: string }
-export interface LoadedFile { path: string; header: VaultHeader; notes: Envelope[]; unsent: string[]; sync: FileSync | null }
+export interface LoadedFile { path: string; header: VaultHeader; notes: Envelope[]; unsent: string[]; sync: FileSync | null; kept: KeptSpaces }
 
 let path: string | null = null;
 let link: Link | null = null;
@@ -76,9 +78,55 @@ function save(changes: FileChanges): void {
 export const flushWrites = (): Promise<void> => writes;
 
 const journal: store.Journal = {
-  put: (envelopes, dirty) => save({ notes: envelopes.map(envelope => ({ envelope, dirty })) }),
-  clean: envelopes => write(() => py('vault_mark_clean', envelopes.map(e => [e.id, e.updatedAt] as [string, number]))),
+  put: (envelopes, dirty, space) => save(space
+    ? { spaceNotes: envelopes.map(envelope => ({ space, envelope, dirty })) }
+    : { notes: envelopes.map(envelope => ({ envelope, dirty })) }),
+  clean: (envelopes, space) => write(() => py('vault_mark_clean', envelopes.map(e => [e.id, e.updatedAt] as [string, number]), space ?? null)),
   header: h => save({ header: h }),
+  // Shared workspaces this account owns are kept in the file too (see workspaces.ts).
+  space: (id, record) => save(record ? { spaces: [{ id, record }] } : { forgetSpaces: [id] }),
+};
+
+// ---- Attached files: kept in the vault file, uploaded when it is linked ----
+
+let uploading = false;
+/** Uploads attached files saved here while offline or before the file was linked (a few at a time). */
+async function uploadFiles(): Promise<void> {
+  if (uploading || !link || !hasSession()) return;
+  uploading = true;
+  try {
+    for (;;) {
+      const pending = await py('vault_file_pending', 2);
+      if (!pending.length) break;
+      for (const p of pending) {
+        await api.file({ action: 'put', fileId: p.fileId, index: p.index, count: p.count, nonce: p.chunk.nonce, ct: p.chunk.ct });
+        await py('vault_file_mark_uploaded', p.fileId, p.index);
+      }
+    }
+  } catch (err) {
+    console.warn('Attached files will be uploaded later', err);
+  } finally {
+    uploading = false;
+  }
+}
+
+const fileStorage: FileStorage = {
+  async save(fileId, chunks) {
+    for (const [index, chunk] of chunks.entries()) await py('vault_file_put', fileId, index, chunks.length, chunk, false);
+    void uploadFiles();
+  },
+  async load(fileId, index, count) {
+    const local = await py('vault_file_get', fileId, index);
+    if (local) return local;
+    if (!link) throw new Error('This file is not stored in this vault file. Link the file to your online account to download it.');
+    const remote = await serverFiles.load(fileId, index, count);
+    await py('vault_file_put', fileId, index, count, remote, true); // kept for offline use
+    return remote;
+  },
+  async remove(fileId) {
+    await py('vault_file_delete', fileId);
+    if (link && hasSession()) await serverFiles.remove(fileId);
+  },
 };
 
 // ---- Opening and closing ----
@@ -89,15 +137,22 @@ export async function openFile(p: string): Promise<LoadedFile> {
     await py('vault_close');
     throw new Error('This vault file is damaged: its header is not valid.');
   }
-  return { path: f.path, header: f.header, notes: f.notes.filter(isEnvelope), unsent: f.dirty, sync: f.sync };
+  const kept: KeptSpaces = {
+    spaces: (f.spaces ?? []).filter(s => typeof s?.id === 'string'),
+    spaceNotes: (f.spaceNotes ?? []).filter(n => typeof n?.space === 'string' && isEnvelope(n.envelope)) as KeptSpaces['spaceNotes'],
+  };
+  return { path: f.path, header: f.header, notes: f.notes.filter(isEnvelope), unsent: f.dirty, sync: f.sync, kept };
 }
 
 export async function createFile(p: string, header: VaultHeader, notes: Envelope[], fileSync: FileSync | null): Promise<string> {
   return (await py('vault_create', p, header, notes, fileSync)).path;
 }
 
-/** Call after store.unlock(): sends changes to the file and, when linked, connects to the account. */
-export function attach(p: string, fileSync: FileSync | null, loginKey: Uint8Array | null): void {
+/**
+ * Call after store.unlock(): sends changes to the file and, when linked, connects to the account.
+ * `kept`: the workspaces this account owns, kept in the file (shown at once, also offline).
+ */
+export function attach(p: string, fileSync: FileSync | null, loginKey: Uint8Array | null, kept?: KeptSpaces): void {
   path = p;
   link = fileSync ? { url: fileSync.url, username: fileSync.username } : null;
   server = link?.url ?? null;
@@ -108,6 +163,8 @@ export function attach(p: string, fileSync: FileSync | null, loginKey: Uint8Arra
   store.setJournal(journal);
   store.setRemoteAccount(!!link);
   sync.setSince(fileSync?.since ?? 0);
+  // Only a file linked to its account shows workspaces; the copies stay in an unlinked file.
+  if (link && kept?.spaces.length) workspaces.loadFromFile(kept.spaces, kept.spaceNotes);
   if (link && hasSession()) {
     remote = { kind: 'connected' };
     sync.startSync();
@@ -393,6 +450,8 @@ export function wireDesktopSession(): void {
 
   sync.onSince(rev => { if (link && path) save({ meta: { sync_since: rev } }); });
   sync.onSessionExpired(() => { setSession(null); void connect(); });
+  setFileStorage(fileStorage);
+  sync.onSyncState(s => { if (s.kind === 'synced') void uploadFiles(); });
   // An expired session (12 hours) is renewed with the kept login key and the request retried.
   setReauthenticator(async () => {
     if (!link || !authKey) return false;

@@ -10,7 +10,7 @@ const fieldsOf = (note: Note) => note.blocks.filter((b): b is FieldsBlock => b.t
 
 describe('templates', () => {
   it('offers blank, email, login, proxy, secure and meeting templates, each with a known category', () => {
-    expect(TEMPLATES.map(t => t.id)).toEqual(['blank', 'email', 'login', 'proxy', 'secure', 'meeting']);
+    expect(TEMPLATES.map(t => t.id)).toEqual(['blank', 'email', 'login', 'card', 'bank', 'proxy', 'secure', 'meeting']);
     for (const t of TEMPLATES) expect(CATEGORIES[t.category]).toBeDefined();
   });
 

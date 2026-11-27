@@ -125,13 +125,20 @@ export const api = {
     const notes = Array.isArray(data.notes) ? data.notes.filter(isEnvelope) : [];
     return { notes, rev: typeof data.rev === 'number' ? data.rev : b.since, more: data.more === true, epoch: typeof data.epoch === 'number' ? data.epoch : 1 };
   },
-  /** Account help (api/_lib/admin.ts): recovery requests, reset codes, owner recovery. */
+  /**
+   * Account help (api/_lib/admin.ts), on the account endpoint (Vercel's free plan allows 12 functions):
+   * recovery requests, reset codes, owner recovery.
+   */
   async support(body: Record<string, unknown>, authed = false): Promise<Record<string, unknown>> {
-    return post('support', body, authed);
+    return post('account', body, authed);
   },
   /** Starts again with a new, empty vault, using a reset code from the owner. */
   async resetWithCode(b: { username: string; code: string; header: VaultHeader; authKey: Uint8Array; recoveryAuthKey: Uint8Array }) {
-    return session(await post('support', { action: 'reset', ...b, authKey: b64(b.authKey), recoveryAuthKey: b64(b.recoveryAuthKey) }));
+    return session(await post('account', { action: 'reset', ...b, authKey: b64(b.authKey), recoveryAuthKey: b64(b.recoveryAuthKey) }));
+  },
+  /** Attached files' encrypted chunks (see api/_lib/files.ts). */
+  async file(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return post('file', body, true);
   },
   async logout(): Promise<void> {
     if (!token) return;

@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from . import __version__
 
-ENDPOINTS = {'prelogin', 'signup', 'login', 'recover', 'account', 'sync', 'logout', 'status', 'workspace', 'wsync', 'support'}
+ENDPOINTS = {'prelogin', 'signup', 'login', 'recover', 'account', 'sync', 'logout', 'status', 'workspace', 'wsync', 'file'}
 LOCAL_HOSTS = {'localhost', '127.0.0.1', '::1'}
 # Shown as the device in the owner's connection history.
 USER_AGENT = f'Cherrion-Desktop/{__version__} ({platform.system()} {platform.release()})'

@@ -1,4 +1,4 @@
-// Admin dashboard (api/admin.ts) and account help (api/support.ts): connection history, recovery
+// Admin dashboard (api/admin.ts) and account help (api/account.ts with an action): connection history, recovery
 // requests, owner-assisted recovery and reset codes.
 //
 // The server stays zero-knowledge:
@@ -217,7 +217,8 @@ async function leaveAllWorkspaces(repo: Repo, accountId: string): Promise<void> 
     if (member.role === 'owner' && !others.some(m => m.role === 'owner')) {
       // Someone has to be able to manage it: the first editor (or anyone) becomes owner.
       const heir = others.find(m => m.role === 'editor') ?? others[0]!;
-      await repo.putMember({ workspaceId: workspace.id, accountId: heir.accountId, role: 'owner', keys: heir.keys });
+      // Editors keep their secret-field keys; a promoted viewer has none (secrets may stay hidden from them).
+      await repo.putMember({ workspaceId: workspace.id, accountId: heir.accountId, role: 'owner', keys: heir.keys, skeys: heir.skeys ?? {} });
     }
     await repo.removeMember(workspace.id, accountId);
   }
@@ -234,7 +235,7 @@ function newResetCode(): string {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-// ---- api/support.ts: help for users ----
+// ---- api/account.ts { action }: help for users ----
 
 export async function supportAction(repo: Repo, request: Request, body: unknown): Promise<unknown> {
   const b = obj(body);

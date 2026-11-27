@@ -145,6 +145,11 @@ function blockToMarkdown(b: Block, opts: { includeSecrets: boolean; titleOf: (id
     case 'divider': return ['---'];
     case 'page': return [`- 📄 [[${opts.titleOf(b.pageId)}]]`];
     case 'table': return tableToMarkdown(b);
+    // The file's content stays in Cherrion (encrypted); Markdown only notes that it was attached.
+    case 'file': {
+      const size = b.size < 1024 * 1024 ? `${Math.max(1, Math.round(b.size / 1024))} KB` : `${(b.size / 1024 / 1024).toFixed(1)} MB`;
+      return [`- 📎 **${b.name}** (${size})${b.note ? `: ${b.note.replace(/\n/g, ' ')}` : ''}`];
+    }
     case 'image': return [`![${b.caption.replace(/[[\]\n]/g, ' ')}](${b.src})`];
     case 'fields':
       return b.fields.flatMap(f => {

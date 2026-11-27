@@ -4,8 +4,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as core from '../api/_lib/core';
 import { workspaceAction, workspaceSync } from '../api/_lib/workspaces';
-import { setSession, setTransport } from '../src/api';
-import { initCrypto, toB64 } from '../src/crypto';
+import { setSession, setTransport, type Transport } from '../src/api';
+import { initCrypto, toB64, type Sealed } from '../src/crypto';
+import type { Envelope } from '../src/envelope';
 import { normalizeNote, textBlock, uid } from '../src/model';
 import * as store from '../src/store';
 import { createVault, deriveKek, unlockWithKek } from '../src/vault';
@@ -15,10 +16,8 @@ const FAST = { opslimit: 1, memlimit: 8192 };
 const PASSWORD = 'correct horse battery staple';
 const repo = core.createMemoryRepo();
 
-beforeAll(async () => {
-  await initCrypto();
-  // Route the API client straight into the server logic.
-  setTransport(async (path, body, token) => {
+/** Routes the API client straight into the server logic. */
+const online: Transport = async (path, body, token) => {
     try {
       const auth = token ? `Bearer ${token}` : null;
       const b = JSON.parse(body);
@@ -34,7 +33,13 @@ beforeAll(async () => {
       if (err instanceof core.HttpError) return { status: err.status, data: { error: err.message } };
       throw err;
     }
-  });
+};
+/** No connection at all. */
+const offline: Transport = async () => ({ status: 0, data: {} });
+
+beforeAll(async () => {
+  await initCrypto();
+  setTransport(online);
 });
 
 const people = new Map<string, { token: string; vaultKey: Uint8Array }>();
@@ -171,5 +176,202 @@ describe('shared workspaces', () => {
   it('never stores a readable name or page on the server', async () => {
     const dump = JSON.stringify(await repo.workspaceNotesSince(teamId, 0, 1000)) + JSON.stringify(await repo.getWorkspace(teamId));
     for (const secret of ['Team plans', 'Shared roadmap', 'Bob notes', 'body']) expect(dump).not.toContain(secret);
+  });
+});
+
+/** The workspace tables of a desktop vault file, as vaultfile.py keeps them (newest copy wins). */
+function vaultFile() {
+  const spaces = new Map<string, Sealed>();
+  const pages = new Map<string, { space: string; envelope: Envelope; dirty: boolean }>();
+  const journal: store.Journal = {
+    put: (envs, dirty, space) => {
+      if (!space) return;
+      for (const envelope of envs) {
+        const current = pages.get(`${space}/${envelope.id}`);
+        if (!current || envelope.updatedAt >= current.envelope.updatedAt) pages.set(`${space}/${envelope.id}`, { space, envelope, dirty });
+      }
+    },
+    clean: (envs, space) => {
+      for (const e of envs) {
+        const current = pages.get(`${space}/${e.id}`);
+        if (current && current.envelope.updatedAt === e.updatedAt) current.dirty = false;
+      }
+    },
+    header: () => {},
+    space: (id, record) => {
+      if (record) { spaces.set(id, record); return; }
+      spaces.delete(id);
+      for (const key of [...pages.keys()]) if (key.startsWith(`${id}/`)) pages.delete(key);
+    },
+  };
+  const contents = () => ({ spaces: [...spaces].map(([id, record]) => ({ id, record })), spaceNotes: [...pages.values()] });
+  return { journal, spaces, pages, contents };
+}
+
+describe('owned workspaces in the desktop vault file', () => {
+  const olgaFile = vaultFile();
+  const edFile = vaultFile();
+  let id = '';
+
+  /** As `as()`, with that person's vault file open (the desktop app attaches it before syncing). */
+  async function withFile(name: string, file: ReturnType<typeof vaultFile>): Promise<void> {
+    store.setJournal(null);
+    await as(name);
+    store.setJournal(file.journal);
+    ws.syncSoon();
+    await ws.syncAll();
+  }
+
+  it('keeps an owner’s workspace and its pages in the file, encrypted', async () => {
+    await withFile('olga', olgaFile);
+    id = await ws.createWorkspace('Field notes');
+    expect([...olgaFile.spaces.keys()]).toEqual([id]);
+    store.addNote(page('Olga plan'), id);
+    await store.flush();
+    expect([...olgaFile.pages.values()].map(p => p.dirty)).toEqual([true]); // saved in the file before the server
+    await ws.syncWorkspaces();
+    expect([...olgaFile.pages.values()].map(p => p.dirty)).toEqual([false]);
+    const raw = JSON.stringify([...olgaFile.spaces.values(), ...[...olgaFile.pages.values()].map(p => p.envelope)]);
+    for (const secret of ['Field notes', 'Olga plan', 'olga']) expect(raw).not.toContain(secret);
+  });
+
+  it('keeps nothing for members who are not owners', async () => {
+    await withFile('eddie', edFile); // eddie needs an account first
+    await withFile('olga', olgaFile);
+    await ws.inviteByUsername(id, 'eddie', 'editor');
+    await withFile('eddie', edFile);
+    await ws.acceptInvitation(ws.listInvitations().find(i => i.workspaceId === id)!.id);
+    await ws.syncWorkspaces();
+    store.addNote(page('Ed idea'), id);
+    await store.flush();
+    await ws.syncWorkspaces();
+    expect(edFile.spaces.size + edFile.pages.size).toBe(0);
+    await withFile('olga', olgaFile); // pulls Ed's page into her file
+    expect([...olgaFile.pages.values()].length).toBe(2);
+  });
+
+  it('opens offline from the file, and uploads offline edits later', async () => {
+    store.setJournal(null);
+    await store.lock();
+    ws.reset();
+    ws.resetSync();
+    setTransport(offline);
+    try {
+      const account = (await repo.findAccount('olga'))!;
+      store.unlock(account.header, unlockWithKek(account.header, deriveKek(PASSWORD, account.header.kdf)), []);
+      store.setJournal(olgaFile.journal);
+      const { spaces, spaceNotes } = olgaFile.contents();
+      ws.loadFromFile(spaces, spaceNotes);
+      expect(ws.listWorkspaces().map(w => [w.name, w.role])).toEqual([['Field notes', 'owner']]);
+      expect(titlesIn(id)).toEqual(['Ed idea', 'Olga plan']);
+      store.addNote(page('Written offline'), id);
+      await store.flush();
+      await ws.syncAll(); // no connection: nothing happens
+      expect([...olgaFile.pages.values()].filter(p => p.dirty).length).toBe(1);
+    } finally {
+      setTransport(online);
+    }
+    setSession(people.get('olga')!.token);
+    ws.syncSoon();
+    await ws.syncAll();
+    expect([...olgaFile.pages.values()].some(p => p.dirty)).toBe(false);
+    await withFile('eddie', edFile);
+    await ws.syncWorkspaces();
+    expect(titlesIn(id)).toEqual(['Ed idea', 'Olga plan', 'Written offline']);
+  });
+
+  it('removes the copy when the workspace is deleted', async () => {
+    await withFile('olga', olgaFile);
+    await ws.deleteWorkspace(id);
+    expect(olgaFile.spaces.size + olgaFile.pages.size).toBe(0);
+  });
+});
+
+describe('secret fields hidden from viewers', () => {
+  let wid = '';
+  let editorLink = '';
+  let viewerLink = '';
+  const fieldsBlock = (password: string) => ({
+    id: uid(), type: 'fields',
+    fields: [{ id: uid(), label: 'User', value: 'alice', kind: 'text' }, { id: uid(), label: 'Password', value: password, kind: 'password' }],
+  });
+  const secretPage = (title: string, password: string) => normalizeNote({ id: uid(), title, blocks: [fieldsBlock(password)] })!;
+  /** [label, value, locked] of the page's fields, as this account sees them. */
+  const fields = (title: string) => {
+    store.setActiveSpace(wid);
+    const note = store.activeNotes().find(n => n.title === title)!;
+    const block = note.blocks[0]!;
+    return block.type === 'fields' ? block.fields.map(f => [f.label, f.value, !!f.locked]) : [];
+  };
+  const accountId = async (name: string) => (await repo.findAccount(name))!.id;
+
+  it('seals secret values so a viewer cannot read them, while editors can', async () => {
+    for (const name of ['vera', 'eric', 'lena']) await as(name);
+    await as('owen');
+    wid = await ws.createWorkspace('Vault team');
+    store.addNote(secretPage('Router', 'hunter2'), wid);
+    await store.flush();
+    await ws.syncWorkspaces();
+    expect(await ws.setViewerSecrets(wid, false)).toBe(1); // the existing page is sealed again
+    expect(ws.getWorkspace(wid)!.viewerSecrets).toBe(false);
+    await ws.inviteByUsername(wid, 'vera', 'viewer');
+    editorLink = await ws.createInviteLink(wid, 'editor', 'https://cherrion.test');
+    viewerLink = await ws.createInviteLink(wid, 'viewer', 'https://cherrion.test');
+
+    await as('vera');
+    await ws.acceptInvitation(ws.listInvitations().find(i => i.workspaceId === wid)!.id);
+    await ws.syncWorkspaces();
+    expect(fields('Router')).toEqual([['User', 'alice', false], ['Password', '', true]]);
+    // Not anywhere in the page she decrypted with the workspace key either.
+    expect(JSON.stringify(store.getNote(store.activeNotes().find(n => n.title === 'Router')!.id))).not.toContain('hunter2');
+
+    await as('eric');
+    await ws.joinWithLink(ws.parseInviteLink(editorLink)!);
+    await ws.syncWorkspaces();
+    expect(fields('Router')).toEqual([['User', 'alice', false], ['Password', 'hunter2', false]]);
+    const note = store.activeNotes().find(n => n.title === 'Router')!;
+    const block = note.blocks[0]!;
+    if (block.type === 'fields') block.fields[1]!.value = 'swordfish';
+    store.touchNote(note);
+    await store.flush();
+    await ws.syncWorkspaces();
+
+    await as('lena');
+    await ws.joinWithLink(ws.parseInviteLink(viewerLink)!);
+    await ws.syncWorkspaces();
+    expect(fields('Router')).toEqual([['User', 'alice', false], ['Password', '', true]]);
+  });
+
+  it('gives the secrets key to a promoted viewer and replaces it when an editor becomes a viewer', async () => {
+    await as('owen');
+    await ws.syncWorkspaces();
+    expect(fields('Router')[1]).toEqual(['Password', 'swordfish', false]);
+    await ws.setRole(wid, await accountId('vera'), 'editor');
+    await ws.setRole(wid, await accountId('eric'), 'viewer');
+    const note = store.activeNotes().find(n => n.title === 'Router')!;
+    const block = note.blocks[0]!;
+    if (block.type === 'fields') block.fields[1]!.value = 'newsecret';
+    store.touchNote(note);
+    await store.flush();
+    await ws.syncWorkspaces();
+
+    await as('vera');
+    await ws.syncWorkspaces();
+    expect(fields('Router')[1]).toEqual(['Password', 'newsecret', false]);
+    await as('eric');
+    await ws.syncWorkspaces();
+    expect(fields('Router')[1]).toEqual(['Password', '', true]);
+    // The server refuses editors without the secrets key.
+    await expect(workspaceAction(repo, await accountId('owen'), { action: 'setRole', workspaceId: wid, accountId: await accountId('eric'), role: 'editor' }))
+      .rejects.toMatchObject({ status: 400 });
+  });
+
+  it('lets viewers see secret fields again when the owner allows it', async () => {
+    await as('owen');
+    await ws.syncWorkspaces();
+    expect(await ws.setViewerSecrets(wid, true)).toBe(1);
+    await as('lena');
+    await ws.syncWorkspaces();
+    expect(fields('Router')).toEqual([['User', 'alice', false], ['Password', 'newsecret', false]]);
   });
 });

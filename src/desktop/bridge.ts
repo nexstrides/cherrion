@@ -1,10 +1,16 @@
 // Typed access to the Python side of the desktop app (desktop/cherrion_desktop/app.py, class Api).
 // pywebview injects window.pywebview.api once the page has loaded and fires `pywebviewready`.
+import type { Sealed } from '../crypto';
 import type { Envelope } from '../envelope';
 import type { VaultHeader } from '../vault';
 
 export interface FileSync { url: string; username: string; since: number }
-export interface OpenedFile { path: string; header: unknown; notes: unknown[]; dirty: string[]; sync: FileSync | null }
+/** Shared workspaces this account owns, kept in the file: sealed records and their pages. */
+export interface KeptSpaces { spaces: { id: string; record: unknown }[]; spaceNotes: { space: string; envelope: Envelope; dirty: boolean }[] }
+export interface OpenedFile {
+  path: string; header: unknown; notes: unknown[]; dirty: string[]; sync: FileSync | null;
+  spaces?: { id: string; record: unknown }[]; spaceNotes?: { space: string; envelope: unknown; dirty: boolean }[];
+}
 export interface AppInfo { version: string; recent: string[]; defaultSyncUrl: string; launchFile: string | null }
 export interface FileAssociation { available: boolean; enabled: boolean }
 export type CloseAction = 'ask' | 'tray' | 'exit';
@@ -12,6 +18,9 @@ export interface FileChanges {
   notes?: { envelope: Envelope; dirty: boolean }[];
   header?: VaultHeader;
   meta?: Partial<Record<'sync_url' | 'sync_username' | 'sync_since', string | number | null>>;
+  spaces?: { id: string; record: Sealed }[];
+  spaceNotes?: { space: string; envelope: Envelope; dirty: boolean }[];
+  forgetSpaces?: string[];
 }
 
 interface PyApi {
@@ -27,10 +36,16 @@ interface PyApi {
   pick_open(): Promise<string | null>;
   pick_save(suggested: string): Promise<string | null>;
   save_text(suggested: string, text: string): Promise<string | null>;
+  save_bytes(suggested: string, base64url: string): Promise<string | null>;
   vault_create(path: string, header: VaultHeader, notes: Envelope[], sync: FileSync | null): Promise<{ path: string }>;
   vault_open(path: string): Promise<OpenedFile>;
   vault_save(changes: FileChanges): Promise<void>;
-  vault_mark_clean(sent: [string, number][]): Promise<void>;
+  vault_mark_clean(sent: [string, number][], space?: string | null): Promise<void>;
+  vault_file_put(fileId: string, index: number, count: number, chunk: Sealed, uploaded: boolean): Promise<void>;
+  vault_file_get(fileId: string, index: number): Promise<Sealed | null>;
+  vault_file_pending(limit: number): Promise<{ fileId: string; index: number; count: number; chunk: Sealed }[]>;
+  vault_file_mark_uploaded(fileId: string, index: number): Promise<void>;
+  vault_file_delete(fileId: string): Promise<void>;
   vault_close(): Promise<void>;
   http_post(baseUrl: string, endpoint: string, body: string, token: string | null): Promise<{ status: number; data: Record<string, unknown> }>;
 }

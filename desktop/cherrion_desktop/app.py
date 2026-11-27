@@ -3,6 +3,7 @@ with a Python bridge for the vault file, native file dialogs and the sync server
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import logging.handlers
@@ -246,6 +247,19 @@ class Api:
         path.write_text(str(text), 'utf-8', newline='')
         return str(path)
 
+    def save_bytes(self, suggested: str, data: str) -> str | None:
+        """Save dialog for an attached file (its content as base64url, decrypted in the page)."""
+        name = Path(str(suggested or 'file')).name
+        ext = Path(name).suffix
+        types = (f'{ext[1:].upper()} file (*{ext})', 'All files (*.*)') if ext else ('All files (*.*)',)
+        result = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=name, file_types=types)
+        if not result:
+            return None
+        path = Path(result if isinstance(result, str) else result[0])
+        text = str(data)
+        path.write_bytes(base64.urlsafe_b64decode(text + '=' * (-len(text) % 4)))
+        return str(path)
+
     # ---- Vault file ----
 
     def vault_create(self, path: str, header: dict, notes: list, sync: dict | None = None) -> dict:
@@ -273,10 +287,26 @@ class Api:
 
     def vault_save(self, changes: dict) -> None:
         vault = self._require()
-        vault.save(changes.get('notes') or [], changes.get('header'), changes.get('meta'))
+        vault.save(changes.get('notes') or [], changes.get('header'), changes.get('meta'),
+                   changes.get('spaces') or [], changes.get('spaceNotes') or [], changes.get('forgetSpaces') or [])
 
-    def vault_mark_clean(self, sent: list) -> None:
-        self._require().mark_clean(sent)
+    def vault_mark_clean(self, sent: list, space: str | None = None) -> None:
+        self._require().mark_clean(sent, space)
+
+    def vault_file_put(self, file_id: str, idx: int, count: int, chunk: dict, uploaded: bool = False) -> None:
+        self._require().file_put(file_id, idx, count, chunk, uploaded)
+
+    def vault_file_get(self, file_id: str, idx: int) -> dict | None:
+        return self._require().file_get(file_id, idx)
+
+    def vault_file_pending(self, limit: int = 2) -> list:
+        return self._require().file_pending(limit)
+
+    def vault_file_mark_uploaded(self, file_id: str, idx: int) -> None:
+        self._require().file_mark_uploaded(file_id, idx)
+
+    def vault_file_delete(self, file_id: str) -> None:
+        self._require().file_delete(file_id)
 
     def vault_close(self) -> None:
         with self._lock:

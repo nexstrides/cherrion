@@ -12,8 +12,8 @@ const SECTIONS: Section[] = [
     body: [
       'Cherrion keeps notes, passwords, 2FA codes and other sensitive details **end-to-end encrypted**: everything is encrypted on your device with your password before it is saved or synced. Nobody else can read it, not even the server.',
       { list: [
-        '**Create a page** with ＋ (top of the sidebar). Pick a template: Blank page, Email account, Website login, Proxy, Secure note or Meeting.',
-        '**Type in the page.** Press `/` in an empty line for headings, to-dos, tables, pictures, secret fields and more.',
+        '**Create a page** with ＋ (top of the sidebar). Pick a template: Blank page, Email account, Website login, Card, Bank account, Proxy, Secure note or Meeting.',
+        '**Type in the page.** Press `/` in an empty line for headings, to-dos, tables, pictures, files, secret fields and more.',
         '**Organise** pages in the tree on the left: drag them, or add sub-pages with the ＋ next to a page.',
         '**Save your recovery key** when it is shown. It is the only way back in if you forget your password.',
       ] },
@@ -28,6 +28,7 @@ const SECTIONS: Section[] = [
         '**Forgot your password?** Choose “Use your recovery key” on the login screen and set a new password.',
         '**Lost the recovery key too?** On that screen choose **Ask the owner for help**. The owner of this Cherrion server contacts you to check it is you. With **Owner recovery** turned on (below), they can send you a new recovery key and your notes come back; otherwise they can send a reset code to start again with an empty account (**I have a reset code from the owner**).',
         '**Offline?** Keep the tab open: the status shows “Offline · N unsaved” and the changes are saved when you are back online. Closing the tab first asks for confirmation.',
+        '**Desktop app (Windows):** “Download the desktop app” on the login screen gets the newest Cherrion.exe. It keeps your vault in one encrypted file that works offline and syncs with this account.',
       ] },
     ],
   },
@@ -55,13 +56,14 @@ const SECTIONS: Section[] = [
         '**Invite by username:** they see the invitation (a red number on the space menu) after logging in, and choose to join or decline.',
         '**Invite by link:** “Create invite link” makes a single-use link valid for 7 days. Send it privately: anyone who has it can join once. The secret part of the link never reaches the server.',
         '**Roles:** Owners invite and remove people and can delete the workspace; Editors add, change and delete pages; Viewers can read and copy but not change anything.',
+        '**Secret fields and viewers:** in Workspace settings, owners choose whether viewers can see secret fields (passwords, secret notes, 2FA codes). When they cannot, those values are sealed with a separate key that only owners and editors get, so viewers see “Hidden from viewers” and cannot read them, not even with the workspace key. Changing the setting saves every page again.',
         '**Removing someone** gives the workspace a new key, so nothing written afterwards can be read with the old one. Pages they already saw may still be in their copies.',
         '**Move a page** between Personal and a workspace with ⋯ → Move to workspace… (or right-click it on desktop). Its sub-pages move with it.',
         '**Safety codes:** in Workspace settings, hover a member’s name to see a code. If they see the same code for you, nobody (not even the server) swapped your keys.',
         'Two people editing the **same page at the same moment**: the last save wins. Editing different pages at the same time is always fine.',
       ] },
       { note: DESKTOP
-        ? 'In the desktop app, workspaces need a vault file linked to an online account, and are shown while connected; they are not stored in the .cherrion file. Files that are not linked are never shared.'
+        ? 'In the desktop app, workspaces need a vault file linked to an online account. **Workspaces you own are also kept in your .cherrion file** (encrypted), so they open offline and offline edits upload when you reconnect. Workspaces you only joined are shown while connected. If an owned workspace is deleted, or you stop being an owner, its copy leaves the file. Files that are not linked are never shared.'
         : 'Workspaces need a connection, like the rest of the website.' },
     ],
   },
@@ -74,7 +76,7 @@ const SECTIONS: Section[] = [
         '**Move pages** by dragging them onto another page (to nest) or onto its top or bottom edge (to reorder).',
         '**Breadcrumbs** above the page open its parent pages.',
         '**Search** (`Ctrl+K`) looks through titles and text; secret values are never searched.',
-        '**Categories** (Note, Email account, Website login, Proxy, Secure note, Meeting) set the icon and filter. Changing a page’s category offers to add that category’s form.',
+        '**Categories** (Note, Email account, Website login, Card, Bank account, Proxy, Secure note, Meeting) set the icon and filter. Changing a page’s category offers to add that category’s form.',
         '**Right-click a page** (desktop) for Open, New sub-page, Rename, Duplicate, Pin, Move, Export, Import and Delete.',
       ] },
     ],
@@ -84,7 +86,7 @@ const SECTIONS: Section[] = [
     body: [
       'Every line is a block. Type `/` in an empty block to choose its type, or use a Markdown shortcut at the start of a line:',
       { keys: [
-        ['/', 'Block menu: Text, Page, Heading 1/2, To-do, Callout, Quote, Code, Table, Picture, Divider, Field group, Secret field, 2FA code'],
+        ['/', 'Block menu: Text, Page, Heading 1/2, To-do, Callout, Quote, Code, Table, Picture, File, Divider, Field group, Secret field, 2FA code'],
         ['# ', 'Heading 1'], ['## ', 'Heading 2'], ['[] ', 'To-do'], ['> ', 'Quote'], ['``` ', 'Code block'], ['---', 'Divider'],
       ] },
       { list: [
@@ -118,11 +120,27 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    id: 'files', icon: '📎️', title: 'Files',
+    body: [
+      { list: [
+        'Attach a file with `/file`, or drop it onto the page: PDF, Word, Excel, PowerPoint, text, CSV, ZIP and other archives, pictures, audio, certificates… up to **10 MB** each. Programs and scripts (such as .exe) cannot be attached.',
+        'Each file is **encrypted on your device** with its own key, which is kept inside the page; the server only stores the encrypted pieces. Anyone who can open the page can download its files, so files on workspace pages are shared with the workspace.',
+        'Add a note under the file’s name; notes and file names are searchable. **Download** decrypts the file and saves it.',
+        'Deleting a file block (or its page) deletes the file too, unless another page still shows it.',
+        'Each account can store up to 200 MB of files.',
+      ] },
+      { note: DESKTOP
+        ? 'In the desktop app, files are kept inside your .cherrion file, so they open offline. A linked file uploads them in the background (files added offline upload when you are back online), and files from your other devices are saved in the file the first time you download them.'
+        : 'On the website, attaching and downloading files needs a connection.' },
+    ],
+  },
+  {
     id: 'fields', icon: '🔐', title: 'Fields, secrets and 2FA codes',
     body: [
       { list: [
         '**Field groups** hold labelled values (email, URL, phone, date…). Add more with **+ Field**, **+ Secret field**, **+ Secret note** and **+ 2FA code**.',
-        '**Secrets** (passwords, secret notes, backup codes) are masked until you press 👁. Copying a secret clears the clipboard after 30 seconds.',
+        '**Secrets** (passwords, card numbers, secret notes, backup codes) are masked. **Click a hidden secret to copy it** (like 📋); the clipboard is cleared after 30 seconds. Press 👁 to show it and edit it. An empty secret field can be typed into directly.',
+        '**Card** and **Bank account** pages come with their forms: card number, CVC, account number, IBAN, PIN and the online banking password are secret fields.',
         '**2FA code** fields store the secret key (or otpauth:// link) from a site’s 2FA setup and show the current 6-digit code with a countdown, like an authenticator app. ✎ edits the key; 📋 copies the code.',
         '**Proxy pages:** paste `ip:port:user:password` into **Link** and the IP address, Port, User and Password fields fill in automatically.',
       ] },

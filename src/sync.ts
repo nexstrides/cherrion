@@ -1,7 +1,8 @@
 // Keeps the in-memory session and the server in step: pushes the outbox, pulls what changed on other
 // devices (by server revision), and reports Online / Saving / Offline for the status under the name.
 import { ApiError, api, hasSession } from './api';
-import type { Envelope } from './envelope';
+import { batchBySize, type Envelope } from './envelope';
+export { batchBySize };
 import * as store from './store';
 import type { VaultHeader } from './vault';
 import * as workspaces from './workspaces';
@@ -41,20 +42,6 @@ function advance(rev: number): void {
 /** Approximate JSON size of the notes in one push (Vercel accepts request bodies up to 4.5 MB). */
 const PUSH_BUDGET = 3_000_000;
 
-/** Splits envelopes into batches of about `budget` bytes of JSON (a bigger single note goes alone). */
-export function batchBySize(list: Envelope[], budget: number): Envelope[][] {
-  const batches: Envelope[][] = [];
-  let current: Envelope[] = [];
-  let size = 0;
-  for (const env of list) {
-    const n = JSON.stringify(env).length;
-    if (current.length && size + n > budget) { batches.push(current); current = []; size = 0; }
-    current.push(env);
-    size += n;
-  }
-  if (current.length) batches.push(current);
-  return batches;
-}
 
 /** Owner recovery is checked once per session (see escrow.ts). */
 let escrowChecked = false;

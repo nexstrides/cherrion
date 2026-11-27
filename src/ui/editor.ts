@@ -2,7 +2,7 @@
 // cursor survives); structural edits re-render and then restore focus with focusBlock/focusField.
 import {
   CATEGORY_IDS, field, fieldsBlock, isSecretKind, isTextBlock, SECRET_MASK, STICKY_COLORS, tableBlock, textBlock, uid,
-  type Block, type CategoryId, type Field, type FieldKind, type FieldsBlock, type ImageBlock, type Note, type PageBlock,
+  type Block, type CategoryId, type Field, type FieldKind, type FieldsBlock, type FileBlock, type ImageBlock, type Note, type PageBlock,
   type StickyColor, type TextBlock, type TextBlockType,
 } from '../model';
 import * as store from '../store';
@@ -16,10 +16,12 @@ import { parseTotp, secondsRemaining, totpCode, type TotpParams } from '../totp'
 import { openTemplatePicker } from './picker';
 import { render, selectNote, ui } from './state';
 import { addPictures, choosePictureFiles, pictureFiles, renderImage } from './images';
+import { attachFile, fileProblem, releaseFile } from '../files';
+import { chooseFiles, fileErrorMessage, renderFileBlock } from './fileBlock';
 import { focusCell, renderTable } from './tableBlock';
 import { createTotpDisplay } from './totpWidget';
 
-type SlashType = TextBlockType | 'divider' | 'fields' | 'secret' | 'totp' | 'page' | 'table' | 'image';
+type SlashType = TextBlockType | 'divider' | 'fields' | 'secret' | 'totp' | 'page' | 'table' | 'image' | 'file';
 interface SlashCommand { type: SlashType; label: string; icon: string; hint: string }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -33,6 +35,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { type: 'code', label: 'Code Block', icon: '<>', hint: 'Monospace snippet' },
   { type: 'table', label: 'Table', icon: '▦', hint: 'Rows and columns' },
   { type: 'image', label: 'Picture', icon: '🖼', hint: 'Add a picture from a file (you can also paste or drop one)' },
+  { type: 'file', label: 'File', icon: '📎️', hint: 'Attach a PDF, Word, ZIP, text… file up to 10 MB (or drop one)' },
   { type: 'divider', label: 'Divider', icon: '―', hint: 'Horizontal line' },
   { type: 'fields', label: 'Field group', icon: '▤', hint: 'Labelled inputs' },
   { type: 'secret', label: 'Secret field', icon: '🔒', hint: 'Hidden value with copy' },
@@ -292,6 +295,7 @@ function renderBlock(note: Note, block: Block): HTMLElement {
       },
     });
   } else if (block.type === 'image') renderImage(note, block, body);
+  else if (block.type === 'file') renderFileBlock(note, block, body);
   else renderTextBlock(note, block, row, body);
 
   row.append(ctrls, body);
@@ -309,7 +313,35 @@ async function insertPictures(noteId: string, files: File[], afterId: string | n
   return added;
 }
 
-/** Paste a picture into a page, or drop picture files onto it. Other drops never navigate away. */
+/** Attaches files after `afterId` (used by "/file" and drop). Each is encrypted and stored first. */
+async function insertFiles(noteId: string, files: File[], afterId: string | null): Promise<FileBlock[]> {
+  const added: FileBlock[] = [];
+  for (const file of files) {
+    const problem = fileProblem(file);
+    if (problem) { toast(problem, 'error', 8000); continue; }
+    if (store.isReadOnly(store.spaceOf(noteId))) { toast('You can view this workspace but not change it.'); break; }
+    toast(`Adding “${file.name}”…`, 'info', 2500);
+    try {
+      const block = await attachFile(file);
+      const note = store.getNote(noteId);
+      if (!note || note.deleted) { void releaseFile(block.fileId); break; }
+      const at = afterId ? indexOf(note, afterId) : -1;
+      note.blocks.splice(at >= 0 ? at + 1 : note.blocks.length, 0, block);
+      afterId = block.id;
+      store.touchNote(note);
+      added.push(block);
+    } catch (err) {
+      toast(fileErrorMessage(err), 'error', 8000);
+    }
+  }
+  if (added.length && ui.activeNoteId === noteId) {
+    renderEditor();
+    focusBlock(added[added.length - 1]!.id);
+  }
+  return added;
+}
+
+/** Paste a picture into a page, or drop picture files (or other files) onto it. Other drops never navigate away. */
 export function wireEditorPictures(): void {
   const view = $('editor-view');
   view.addEventListener('paste', e => {
@@ -332,10 +364,15 @@ export function wireEditorPictures(): void {
     view.classList.remove('drop-target');
     const note = currentNote();
     const files = pictureFiles(e.dataTransfer);
-    if (!note || !files.length) return;
+    const others = [...(e.dataTransfer?.files ?? [])].filter(f => !files.includes(f));
+    if (!note || (!files.length && !others.length)) return;
     e.preventDefault();
     const row = (e.target as Element | null)?.closest?.<HTMLElement>('.block-row');
-    void insertPictures(note.id, files, row?.dataset.blockId ?? note.blocks[note.blocks.length - 1]?.id ?? null);
+    const after = row?.dataset.blockId ?? note.blocks[note.blocks.length - 1]?.id ?? null;
+    void (async () => {
+      const pictures = files.length ? await insertPictures(note.id, files, after) : [];
+      if (others.length) await insertFiles(note.id, others, pictures[pictures.length - 1]?.id ?? after);
+    })();
   });
   // A file dropped anywhere else would make the window open it and leave the app.
   window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
@@ -432,15 +469,27 @@ function renderFieldRow(note: Note, block: FieldsBlock, f: Field): HTMLElement {
 
   const value = el('div', { className: 'fg-value' });
   const valueLabel = f.label || 'Field value';
+  if (f.locked) {
+    // Sealed with the workspace's secrets key, which viewers do not get: nothing to show or copy.
+    row.classList.add('is-locked');
+    value.append(el('span', {
+      className: 'secret-locked', text: '🔒 Hidden from viewers',
+      title: 'The workspace owner hides secret fields (passwords, secret notes, 2FA codes) from viewers.',
+    }));
+    row.append(label, value, el('div', { className: 'fg-tools' }, editOnly(toolButton('✕', 'Remove field', () => void confirmRemoveField(note, block, f)))));
+    return row;
+  }
   if (f.kind === 'totp') return renderTotpRow(note, block, f, row, label);
   if (f.kind === 'secret-text' && !revealed) {
+    // A click copies it, like 📋 (👁 shows it for editing). An empty one opens for typing.
     const mask = el('button', {
-      className: 'secret-mask',
+      className: `secret-mask${f.value ? ' copy-on-click' : ''}`,
       type: 'button',
-      text: f.value ? `${SECRET_MASK}  hidden` : 'Empty. Click to reveal and edit.',
-      onclick: () => setRevealed(f.id, true),
+      text: f.value ? `${SECRET_MASK}  hidden · click to copy` : 'Empty. Click to add.',
+      title: f.value ? 'Click to copy. 👁 shows it for editing.' : '',
+      onclick: () => (f.value ? void copyText(f.value, f.label || 'Secret', true) : setRevealed(f.id, true)),
     });
-    mask.setAttribute('aria-label', `Reveal ${valueLabel}`);
+    mask.setAttribute('aria-label', f.value ? `Copy ${valueLabel}` : `Add ${valueLabel}`);
     value.append(mask);
   } else if (f.kind === 'secret-text') {
     const area = el('textarea', { className: 'fg-input secret-area', value: f.value, rows: 3, spellcheck: false });
@@ -460,6 +509,17 @@ function renderFieldRow(note: Note, block: FieldsBlock, f: Field): HTMLElement {
       syncProxyInPage(block, f, before, (e as InputEvent).inputType === 'insertFromPaste');
       store.touchNote(note);
     });
+    if (f.kind === 'password' && !revealed && f.value) {
+      // A hidden secret copies on click (or Enter), like 📋; 👁 shows it for editing. Empty ones
+      // stay normal inputs, so a new secret can be typed or pasted straight in.
+      input.readOnly = true;
+      input.classList.add('copy-on-click');
+      input.title = 'Click to copy. 👁 shows it for editing.';
+      input.setAttribute('aria-label', `${valueLabel} (hidden). Press Enter to copy`);
+      const copy = () => void copyText(f.value, f.label || 'Value', true);
+      input.addEventListener('click', copy);
+      input.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(); } });
+    }
     value.append(input);
   }
 
@@ -527,7 +587,15 @@ function renderTotpRow(note: Note, block: FieldsBlock, f: Field, row: HTMLElemen
     } else if (!params) {
       value.append(el('button', { className: 'secret-mask invalid', type: 'button', text: 'Not a valid 2FA key. Click to fix it.', onclick: () => editTotp(f.id) }));
     } else {
-      value.append(createTotpDisplay(params, name));
+      // A click on the code copies it, like 📋.
+      const display = createTotpDisplay(params, name);
+      display.classList.add('copy-on-click');
+      display.title = 'Click to copy the current code';
+      display.tabIndex = 0;
+      display.setAttribute('role', 'button');
+      display.addEventListener('click', () => void copyTotpCode(name, params));
+      display.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void copyTotpCode(name, params); } });
+      value.append(display);
     }
     tools.append(editOnly(toolButton('✎', 'Edit secret key', () => editTotp(f.id))));
     if (params) tools.append(toolButton('📋', 'Copy current code', () => void copyTotpCode(name, params)));
@@ -599,6 +667,8 @@ async function confirmRemoveBlock(note: Note, block: Block): Promise<void> {
     };
   } else if (block.type === 'image') {
     question = { title: 'Delete picture?', message: 'The picture is removed from this page.' };
+  } else if (block.type === 'file') {
+    question = { title: 'Delete file?', message: `“${block.name}” is removed from this page and deleted (unless another page shows it too).`, confirmLabel: 'Delete file' };
   } else if (block.type === 'table') {
     if (block.rows.some(r => r.some(c => c.trim()))) {
       question = { title: 'Delete table?', message: `The table (${block.rows.length} × ${block.rows[0]?.length ?? 0}) and its text will be deleted.` };
@@ -608,6 +678,7 @@ async function confirmRemoveBlock(note: Note, block: Block): Promise<void> {
   }
   if (question && !(await confirmDialog(question))) return;
   removeBlock(note, block.id);
+  if (block.type === 'file' && !store.fileInUse(block.fileId)) void releaseFile(block.fileId);
 }
 
 let clipboardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -749,7 +820,7 @@ const SELECTABLE = new Set(['text', 'password', 'url', 'tel', 'search']);
 export function focusBlock(blockId: string, atEnd = false): void {
   requestAnimationFrame(() => {
     const row = document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
-    const targets = row?.querySelectorAll<HTMLElement>('.block-input, .fg-input, .secret-mask, .page-link, .table-cell, .image-caption');
+    const targets = row?.querySelectorAll<HTMLElement>('.block-input, .fg-input, .secret-mask, .page-link, .table-cell, .image-caption, .file-note');
     const target = targets && (atEnd ? targets[targets.length - 1] : targets[0]);
     if (!target) return;
     target.focus();
@@ -847,6 +918,26 @@ function applySlashCommand(note: Note, block: TextBlock, type: SlashType): void 
     void choosePictureFiles().then(async files => {
       if (!files.length) { focusBlock(blockId); return; }
       const added = await insertPictures(noteId, files, blockId);
+      const current = store.getNote(noteId);
+      const placeholder = current?.blocks.find(b => b.id === blockId);
+      if (current && added.length && placeholder?.type === 'p' && !placeholder.content) {
+        current.blocks.splice(indexOf(current, blockId), 1);
+        store.touchNote(current);
+        if (ui.activeNoteId === noteId) { renderEditor(); focusBlock(added[added.length - 1]!.id); }
+      }
+    });
+    return;
+  }
+  if (type === 'file') {
+    // Pick files; they replace the empty paragraph the command was typed in.
+    block.content = '';
+    store.touchNote(note);
+    renderEditor();
+    const noteId = note.id;
+    const blockId = block.id;
+    void chooseFiles().then(async files => {
+      if (!files.length) { focusBlock(blockId); return; }
+      const added = await insertFiles(noteId, files, blockId);
       const current = store.getNote(noteId);
       const placeholder = current?.blocks.find(b => b.id === blockId);
       if (current && added.length && placeholder?.type === 'p' && !placeholder.content) {
