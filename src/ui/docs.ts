@@ -105,6 +105,12 @@ const SECTIONS: Section[] = [
         ['↑ / ↓', 'Cell above / below, then out of the table'],
       ] },
       'Hover the table for **Row**, **Column** and **⋯** (insert above/below/left/right, delete a row or column, turn the header row on or off).',
+      '**Column types:** the bar above the table shows each column’s type; click it to change it. **Text** is any text; **Select** is a dropdown with one choice; **Status** is a dropdown that starts with Not started / In progress / Done; **Multi-select** holds several tags.',
+      { list: [
+        'Click a dropdown cell (or press `Enter`, or just start typing) to choose. Type a new name and press `Enter` to add it as an option. Multi-select stays open so you can pick several; `Esc` closes it.',
+        '**Edit options** (in the picker, or the column menu) renames, recolours, reorders and deletes options. Renaming or deleting one updates every cell that uses it.',
+        'Turning a text column into a dropdown makes its values the options. `Backspace` clears a dropdown cell. Option names cannot contain commas.',
+      ] },
     ],
   },
   {
@@ -141,6 +147,7 @@ const SECTIONS: Section[] = [
         '**Secrets** (passwords, card numbers, secret notes, backup codes) are masked. **Click a hidden secret to copy it** (like 📋); the clipboard is cleared after 30 seconds. Press 👁 to show it and edit it. An empty secret field can be typed into directly.',
         '**Card** and **Bank account** pages come with their forms: card number, CVC, account number, IBAN, PIN and the online banking password are secret fields.',
         '**2FA code** fields store the secret key (or otpauth:// link) from a site’s 2FA setup and show the current 6-digit code with a countdown, like an authenticator app. ✎ edits the key; 📋 copies the code.',
+        '**Scan the QR code** with 📷 on a 2FA field: paste a screenshot of the site’s setup QR code (`Ctrl+V`), drop or choose a picture, use the camera (phones), or capture the screen (website on a computer). The code is read on your device only; the field (and an untitled page) takes the site’s name.',
         '**Proxy pages:** paste `ip:port:user:password` into **Link** and the IP address, Port, User and Password fields fill in automatically.',
       ] },
     ],

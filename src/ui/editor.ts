@@ -18,6 +18,7 @@ import { render, selectNote, ui } from './state';
 import { addPictures, choosePictureFiles, pictureFiles, renderImage } from './images';
 import { attachFile, fileProblem, releaseFile } from '../files';
 import { chooseFiles, fileErrorMessage, renderFileBlock } from './fileBlock';
+import { scanQrCode } from './qrScan';
 import { focusCell, renderTable } from './tableBlock';
 import { createTotpDisplay } from './totpWidget';
 
@@ -578,12 +579,14 @@ function renderTotpRow(note: Note, block: FieldsBlock, f: Field, row: HTMLElemen
     input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); finishTotpEdit(f, input); } });
     value.append(input);
     tools.append(
+      editOnly(toolButton('📷', 'Scan the QR code', () => void scanTotpInto(note.id, f.id))),
       toolButton(revealed ? '🙈' : '👁', revealed ? 'Hide secret key' : 'Show secret key', () => setRevealed(f.id, !revealed)),
       toolButton('✓', 'Done editing', () => finishTotpEdit(f, input)),
     );
   } else {
     if (!f.value) {
-      value.append(el('button', { className: 'secret-mask', type: 'button', text: 'Not set up. Click to add the secret key.', onclick: () => editTotp(f.id) }));
+      value.append(el('button', { className: 'secret-mask', type: 'button', text: 'Not set up. Click to add the secret key, or 📷 to scan the QR code.', onclick: () => editTotp(f.id) }));
+      tools.append(editOnly(toolButton('📷', 'Scan the QR code', () => void scanTotpInto(note.id, f.id))));
     } else if (!params) {
       value.append(el('button', { className: 'secret-mask invalid', type: 'button', text: 'Not a valid 2FA key. Click to fix it.', onclick: () => editTotp(f.id) }));
     } else {
@@ -603,6 +606,26 @@ function renderTotpRow(note: Note, block: FieldsBlock, f: Field, row: HTMLElemen
   tools.append(editOnly(toolButton('✕', 'Remove field', () => void confirmRemoveField(note, block, f))));
   row.append(label, value, tools);
   return row;
+}
+
+/** Scans a 2FA setup QR code into a field; an unnamed field takes the site's name from the code. */
+async function scanTotpInto(noteId: string, fieldId: string): Promise<void> {
+  const text = await scanQrCode();
+  if (!text) return;
+  // The page may have changed while the scanner was open: find the field again.
+  const note = store.getNote(noteId);
+  const field = note?.blocks.flatMap(b => (b.type === 'fields' ? b.fields : [])).find(x => x.id === fieldId);
+  if (!note || note.deleted || !field) { toast('That 2FA field no longer exists.', 'error'); return; }
+  const params = parseTotp(text);
+  field.value = text.trim();
+  const site = params?.issuer || params?.account;
+  if (site && (!field.label.trim() || field.label.trim() === '2FA code')) field.label = params?.issuer && params.account ? `${params.issuer} (${params.account})` : site;
+  if (params?.issuer && !note.title.trim()) note.title = params.issuer; // an untitled page takes the site's name
+  ui.editing.delete(fieldId);
+  ui.revealed.delete(fieldId);
+  store.touchNote(note);
+  if (ui.activeNoteId === noteId) renderEditor();
+  toast(`2FA code set up${site ? ` for ${site}` : ''}. The QR code was read on this device only.`);
 }
 
 function editTotp(fieldId: string): void {

@@ -32,8 +32,126 @@ export interface FieldsBlock { id: string; type: 'fields'; fields: Field[] }
 export interface PageBlock { id: string; type: 'page'; pageId: string }
 
 /** A grid of plain-text cells. `rows` is rectangular; with `header`, the first row is the header. */
-export interface TableBlock { id: string; type: 'table'; header: boolean; rows: string[][] }
-export const TABLE_LIMITS = { rows: 200, cols: 20, cell: 10_000 } as const;
+export interface TableBlock { id: string; type: 'table'; header: boolean; rows: string[][]; columns?: TableColumn[] }
+export const TABLE_LIMITS = { rows: 200, cols: 20, cell: 10_000, options: 100, option: 60 } as const;
+
+/**
+ * Table column types: plain text, or a dropdown whose options belong to the column. `status` is a
+ * single choice that starts with Not started / In progress / Done. Cells always hold text: a select
+ * or status cell holds its option's label, a multi-select cell its labels joined by ", ", so search,
+ * Markdown and older versions of the app still read them. Option labels cannot contain commas (as in
+ * Notion), which keeps multi-select cells unambiguous.
+ */
+export const COLUMN_TYPES = ['text', 'select', 'status', 'multi'] as const;
+export type ColumnType = (typeof COLUMN_TYPES)[number];
+export const OPTION_COLORS = ['gray', 'brown', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'red'] as const;
+export type OptionColor = (typeof OPTION_COLORS)[number];
+export interface SelectOption { id: string; label: string; color: OptionColor }
+export interface TableColumn { type: ColumnType; options: SelectOption[] }
+export const TEXT_COLUMN: TableColumn = Object.freeze({ type: 'text', options: [] }) as TableColumn;
+
+/** True for the column types shown as a dropdown. */
+export const isChoiceColumn = (type: ColumnType): boolean => type !== 'text';
+/** Option labels: one line, no commas, at most TABLE_LIMITS.option characters. */
+export const cleanOptionLabel = (text: string): string =>
+  text.replace(/[,\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, TABLE_LIMITS.option);
+/** The labels in a multi-select cell. */
+export const splitChoices = (cell: string): string[] => cell.split(',').map(cleanOptionLabel).filter(Boolean);
+export const joinChoices = (labels: string[]): string => labels.join(', ');
+/** The default options of a new Status column. */
+export const statusOptions = (): SelectOption[] => [
+  { id: uid(), label: 'Not started', color: 'gray' },
+  { id: uid(), label: 'In progress', color: 'blue' },
+  { id: uid(), label: 'Done', color: 'green' },
+];
+
+export const findOption = (col: TableColumn, label: string): SelectOption | undefined =>
+  col.options.find(o => o.label.toLowerCase() === label.toLowerCase());
+
+/** The colour for a new option: the first one the column does not use yet. */
+export function nextOptionColor(col: TableColumn): OptionColor {
+  const used = new Set(col.options.map(o => o.color));
+  return OPTION_COLORS.find(c => c !== 'gray' && !used.has(c)) ?? OPTION_COLORS[col.options.length % OPTION_COLORS.length]!;
+}
+
+/** The rows holding values: with a header row, the first row holds the column names instead. */
+const valueRows = (t: TableBlock): string[][] => (t.header ? t.rows.slice(1) : t.rows);
+
+/** The table's column definitions, one per column (created as plain text when missing). */
+export function tableColumns(t: TableBlock): TableColumn[] {
+  const cols = t.rows[0]?.length ?? 1;
+  t.columns ??= [];
+  while (t.columns.length < cols) t.columns.push({ type: 'text', options: [] });
+  t.columns.length = cols;
+  return t.columns;
+}
+
+/**
+ * Changes a column's type. Values become options when a text column turns into a dropdown (as in
+ * Notion); a multi-select column keeps the first value of each cell when it becomes single-choice; a
+ * dropdown that becomes text keeps its values as text (and its options, in case it is switched back).
+ */
+export function setColumnType(t: TableBlock, c: number, to: ColumnType): void {
+  const col = tableColumns(t)[c];
+  if (!col || col.type === to) return;
+  if (to !== 'text') {
+    for (const row of valueRows(t)) {
+      const cell = row[c] ?? '';
+      const raw = to === 'multi' ? splitChoices(cell) : col.type === 'multi' ? splitChoices(cell).slice(0, 1) : [cleanOptionLabel(cell)].filter(Boolean);
+      const labels: string[] = [];
+      for (const label of raw) {
+        let option = findOption(col, label);
+        if (!option && col.options.length < TABLE_LIMITS.options) {
+          option = { id: uid(), label, color: nextOptionColor(col) };
+          col.options.push(option);
+        }
+        const shown = option?.label ?? label;
+        if (!labels.some(l => l.toLowerCase() === shown.toLowerCase())) labels.push(shown);
+      }
+      row[c] = to === 'multi' ? joinChoices(labels) : labels[0] ?? '';
+    }
+    if (to === 'status' && !col.options.length) col.options = statusOptions();
+  }
+  col.type = to;
+}
+
+/** After an option was renamed: the cells that showed it show the new name. */
+export function renameChoice(t: TableBlock, c: number, from: string, to: string): void {
+  const multi = tableColumns(t)[c]?.type === 'multi';
+  for (const row of valueRows(t)) {
+    const cell = row[c] ?? '';
+    row[c] = multi ? joinChoices(splitChoices(cell).map(l => (l === from ? to : l))) : cleanOptionLabel(cell) === from ? to : cell;
+  }
+}
+
+/** After an option was deleted: it is taken out of the cells. */
+export function removeChoice(t: TableBlock, c: number, label: string): void {
+  const multi = tableColumns(t)[c]?.type === 'multi';
+  for (const row of valueRows(t)) {
+    const cell = row[c] ?? '';
+    row[c] = multi ? joinChoices(splitChoices(cell).filter(l => l !== label)) : cleanOptionLabel(cell) === label ? '' : cell;
+  }
+}
+
+/** How many cells of a column use an option. */
+export function choiceUsage(t: TableBlock, c: number, label: string): number {
+  const multi = tableColumns(t)[c]?.type === 'multi';
+  return valueRows(t).filter(row => (multi ? splitChoices(row[c] ?? '').includes(label) : cleanOptionLabel(row[c] ?? '') === label)).length;
+}
+
+function normalizeColumn(raw: unknown): TableColumn {
+  if (!isObj(raw)) return { type: 'text', options: [] };
+  const seen = new Set<string>();
+  const options: SelectOption[] = [];
+  for (const o of Array.isArray(raw.options) ? raw.options : []) {
+    if (!isObj(o) || options.length >= TABLE_LIMITS.options) continue;
+    const label = cleanOptionLabel(str(o.label));
+    if (!label || seen.has(label.toLowerCase())) continue;
+    seen.add(label.toLowerCase());
+    options.push({ id: str(o.id).slice(0, 40) || uid(), label, color: oneOf(OPTION_COLORS, o.color) ? o.color : 'gray' });
+  }
+  return { type: oneOf(COLUMN_TYPES, raw.type) ? raw.type : 'text', options };
+}
 
 /**
  * A picture stored inside the page (so it is encrypted and synced with it) as a data: URL, already
@@ -243,7 +361,11 @@ export function normalizeBlock(raw: unknown): Block | null {
       .map(r => (r as unknown[]).slice(0, TABLE_LIMITS.cols).map(c => str(c).slice(0, TABLE_LIMITS.cell)));
     const cols = Math.max(1, ...rows.map(r => r.length));
     const grid = rows.length ? rows.map(r => [...r, ...Array<string>(cols - r.length).fill('')]) : [['']];
-    return { id, type: 'table', header: raw.header === true, rows: grid };
+    const table: TableBlock = { id, type: 'table', header: raw.header === true, rows: grid };
+    // Column types are kept only when some column is more than plain text (older pages have none).
+    const columns = Array.from({ length: cols }, (_, c) => normalizeColumn(Array.isArray(raw.columns) ? raw.columns[c] : null));
+    if (columns.some(col => col.type !== 'text' || col.options.length)) table.columns = columns;
+    return table;
   }
   if (oneOf(TEXT_BLOCK_TYPES, raw.type)) {
     const b: TextBlock = { id, type: raw.type, content: str(raw.content) };

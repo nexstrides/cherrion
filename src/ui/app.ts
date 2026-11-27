@@ -26,6 +26,8 @@ import { wireTreeDrag } from './treedrag';
 import { canEdit, moveTargets, renderSwitcher, resetWorkspacesUi, showMove, wireWorkspaces } from './workspaces';
 import { getWorkspace, syncSoon } from '../workspaces';
 import { releaseFile } from '../files';
+import { closeChoicePicker } from './tableChoice';
+import { closeQrScan } from './qrScan';
 
 const narrow = window.matchMedia('(max-width: 860px)');
 
@@ -310,6 +312,8 @@ export function clearAppDom(): void {
   closeDialog();
   closeTransfer();
   closeLightbox();
+  closeChoicePicker();
+  closeQrScan();
   resetWorkspacesUi();
   setNav(false);
   $('settings-modal').classList.add('hidden');
