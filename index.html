@@ -90,6 +90,51 @@
         <p class="form-error hidden" role="alert"></p>
         <button type="submit" class="primary-btn wide">Reset password and log in</button>
         <button type="button" id="link-login-from-recover" class="link-btn">Back to log in</button>
+        <div class="lock-alt">
+          <p class="muted small">Lost your recovery key too?</p>
+          <button type="button" id="link-ask-owner" class="action-btn wide-btn">Ask the owner for help</button>
+          <button type="button" id="link-reset-code" class="link-btn">I have a reset code from the owner</button>
+        </div>
+      </form>
+
+      <!-- Lost both the password and the recovery key: a request to the server's owner (admin dashboard). -->
+      <form id="panel-ask" class="lock-panel hidden" novalidate>
+        <h2>Ask the owner for help</h2>
+        <p class="muted">Your notes are encrypted with your password, so nobody can simply reset it. The owner of this Cherrion server will contact you to check it is really you. If you turned on <strong>Owner recovery</strong> in Settings, they can give you a new recovery key and your notes come back. Otherwise they can give you a reset code to start again with an empty account.</p>
+        <label class="field-label">Username
+          <input id="ask-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        </label>
+        <label class="field-label">How can the owner reach you?
+          <input id="ask-contact" type="text" maxlength="200" placeholder="Email address, phone number…" autocomplete="email" />
+        </label>
+        <label class="field-label">Message (optional)
+          <textarea id="ask-message" rows="3" maxlength="1000" placeholder="Anything that helps the owner recognise you"></textarea>
+        </label>
+        <p id="ask-done" class="notice hidden" role="status"></p>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Send request</button>
+        <button type="button" id="link-login-from-ask" class="link-btn">Back to log in</button>
+      </form>
+
+      <!-- A reset code from the owner: a new, empty vault for the same username. -->
+      <form id="panel-reset" class="lock-panel hidden" novalidate>
+        <h2>Start again with a reset code</h2>
+        <p class="notice warn">Your old notes cannot be restored with a reset code: they are deleted, and you start with an empty account. Shared workspaces have to invite you again.</p>
+        <label class="field-label">Username
+          <input id="reset-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        </label>
+        <label class="field-label">Reset code
+          <input id="reset-code" type="text" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" />
+        </label>
+        <label class="field-label">New password
+          <input id="reset-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field-label">Confirm new password
+          <input id="reset-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <p class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-btn wide">Start again with an empty account</button>
+        <button type="button" id="link-login-from-reset" class="link-btn">Back to log in</button>
       </form>
 
       <div id="panel-fatal" class="lock-panel hidden">
@@ -416,6 +461,14 @@
           <span data-icon="upload"></span>Import backup
           <input id="input-import-json" type="file" accept=".json,application/json" hidden />
         </label>
+      </div>
+
+      <!-- Owner recovery (opt-in escrow), shown when the server has an owner key: see src/ui/escrow.ts. -->
+      <div id="escrow-section" class="hidden">
+        <h4 class="section-title">Owner recovery</h4>
+        <label class="check"><input id="input-escrow" type="checkbox" /> Let the owner of this Cherrion server restore my notes if I lose both my password and my recovery key</label>
+        <p class="muted small">When this is on, your vault key is also encrypted for the owner. If you lose both, they can give you a new recovery key after checking it is really you. It also means the owner could read your notes, so only turn it on if you trust them. Off by default.</p>
+        <p id="escrow-owner" class="muted small"></p>
       </div>
 
       <h4 class="section-title">Security</h4>

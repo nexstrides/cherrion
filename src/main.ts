@@ -9,6 +9,7 @@ import { hydrateIcons } from './ui/dom';
 import { showDesktopStart, wireDesktop } from './ui/desktop';
 import { showFatal, showLockScreen, wireLockScreen } from './ui/lock';
 import { captureJoinLink } from './ui/workspaces';
+import { wireEscrowSettings } from './ui/escrow';
 
 // Browser storage is per origin. Keep local development on one origin (localhost) so the vault is
 // always found, whichever loopback address was typed or printed.
@@ -18,6 +19,7 @@ async function boot(): Promise<void> {
   document.body.classList.toggle('dark', settings.dark);
   hydrateIcons();
   wireApp();
+  wireEscrowSettings();
   if (DESKTOP) {
     // WebView2 lists Document Picture-in-Picture but refuses to open it, so no floating stickies here yet.
     document.body.classList.add('desktop', 'no-popout');

@@ -105,6 +105,7 @@ Below is the **complete, structured project documentation** formatted so you can
    * `cherrion_accounts`: username, the key-wrapped vault header, and SHA-256 hashes of the login and recovery auth keys
    * `cherrion_notes`: one encrypted envelope per note (only id, timestamp and deleted flag are readable)
    * `cherrion_sessions`: hashed session tokens (12 hours)
+   * `cherrion_events` (30 days), `cherrion_recovery_requests`, `cherrion_reset_codes`, `cherrion_admin_sessions`, `cherrion_settings`, and on `cherrion_accounts` the last-seen columns and `escrow`: the admin dashboard's connection history (time, IP, device, approximate location; never note content), recovery requests, hashed reset codes, and the vault keys of users who turned on owner recovery (sealed to the owner key).
    * `cherrion_workspaces`, `cherrion_workspace_members`, `cherrion_workspace_invites`, `cherrion_workspace_notes`: workspaces with their encrypted names, each member's role and sealed keys, pending invitations (invite links store only a hash of their secret), and encrypted workspace pages. `cherrion_accounts.public_key` holds each account's workspace public key.
 2. **Browser:** nothing but non-secret preferences in `localStorage` (`cherrion_settings_v1`: theme, auto-logout, last username). Decrypted notes exist only in memory while you are logged in.
 3. **Manual Backups:** `cherrion-backup-YYYY-MM-DD.json` via **⚙ Settings → ⬇ Export encrypted backup**; only your password or recovery key can open it.
@@ -139,6 +140,16 @@ Below is the **complete, structured project documentation** formatted so you can
 1. Click inside any block and type `/` to insert headings, to-dos, callouts, quotes, code, dividers, pages, field groups, secret fields or 2FA codes.
 2. Click **📌 Pin Sticky** and choose a color to add a note to the **📌 Stickies** board.
 3. Click **Pop-Out** (best in Chrome/Edge) to float the sticky note above other desktop apps. (Not available in the desktop app yet.)
+
+### Step 5b: Admin Dashboard (the app owner)
+1. Open `https://<your site>/admin/`. The first time, it shows a setup page: choose an admin password, add the 2FA key to an authenticator app, and copy the `CHERRION_ADMIN` value.
+2. In Vercel → Settings → Environment Variables, add `CHERRION_ADMIN` with that value, then redeploy. (Locally: `CHERRION_ADMIN=...` in `.env.local`.)
+3. Log in at `/admin/` with the admin password and a 2FA code. Sessions last one hour.
+   * **Requests:** people who lost both their password and recovery key ask from the login page ("Use your recovery key" → "Ask the owner for help"). Check it is really them, then:
+     * **New recovery key**, if they turned on **Settings → Owner recovery**: their notes are kept.
+     * **Reset code** otherwise: they start again with an empty account under the same username.
+   * **Users:** joined, last seen, where (IP and approximate location), device, pages, workspaces, and whether owner recovery is on. Click a user for their 30-day connection history.
+   * **Activity:** everyone's logins, failed logins, resets and admin actions for the last 30 days.
 
 ### Step 6: Desktop App (offline, one file)
 **Use it:** download `Cherrion.exe` from the GitHub **Releases** page and run it. No installation is needed.

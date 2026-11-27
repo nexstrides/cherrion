@@ -7,6 +7,7 @@ import type { KdfParams } from '../../src/crypto.js';
 import type { Envelope } from '../../src/envelope.js';
 import type { VaultHeader } from '../../src/vault.js';
 import { memoryWorkspaceRepo, type WorkspaceRepo } from './workspaces.js';
+import { record, seen, SEEN_EVERY_MS, type AdminRepo, type ClientInfo, type Escrow, type EventRow, type RecoveryRequest } from './admin.js';
 
 export interface Account {
   id: string; username: string; header: VaultHeader; authHash: string; recoveryAuthHash: string;
@@ -14,7 +15,7 @@ export interface Account {
   publicKey?: string | null;
 }
 
-export interface Repo extends WorkspaceRepo {
+export interface Repo extends WorkspaceRepo, AdminRepo {
   /** False for the in-memory development store (data disappears on restart). */
   readonly persistent: boolean;
   findAccount(username: string): Promise<Account | null>;
@@ -81,7 +82,7 @@ function envelopes(value: unknown): Envelope[] {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-async function newSession(repo: Repo, accountId: string): Promise<string> {
+export async function newSession(repo: Repo, accountId: string): Promise<string> {
   const token = randomBytes(32).toString('base64url');
   await repo.createSession(sha256(token), accountId, new Date(Date.now() + SESSION_MS));
   return token;
@@ -118,7 +119,7 @@ export async function status(repo: Repo): Promise<{ persistent: boolean }> {
   return { persistent: repo.persistent };
 }
 
-export async function signup(repo: Repo, body: unknown): Promise<{ token: string; header: VaultHeader }> {
+export async function signup(repo: Repo, body: unknown, client?: ClientInfo): Promise<{ token: string; header: VaultHeader }> {
   const b = obj(body);
   const username = normalizeUsername(b.username);
   const h = header(b.header);
@@ -126,15 +127,22 @@ export async function signup(repo: Repo, body: unknown): Promise<{ token: string
   const account = await repo.createAccount(username, h, sha256(authKey(b.authKey, 'authKey')), sha256(authKey(b.recoveryAuthKey, 'recoveryAuthKey')));
   if (!account) throw new HttpError(409, 'That username is already taken.');
   if (notes.length) await repo.putNotes(account.id, notes);
+  await record(repo, 'signup', client, { id: account.id, username });
+  await seen(repo, account.id, client);
   return { token: await newSession(repo, account.id), header: h };
 }
 
-export async function login(repo: Repo, body: unknown): Promise<{ token: string; header: VaultHeader }> {
+export async function login(repo: Repo, body: unknown, client?: ClientInfo): Promise<{ token: string; header: VaultHeader }> {
   const b = obj(body);
   const username = normalizeUsername(b.username);
   const key = authKey(b.authKey, 'authKey');
   const account = await repo.findAccount(username);
-  if (!account || !sameHash(sha256(key), account.authHash)) throw new HttpError(401, 'Wrong username or password.');
+  if (!account || !sameHash(sha256(key), account.authHash)) {
+    await record(repo, 'login_failed', client, { id: account?.id ?? null, username });
+    throw new HttpError(401, 'Wrong username or password.');
+  }
+  await record(repo, 'login', client, { id: account.id, username });
+  await seen(repo, account.id, client);
   return { token: await newSession(repo, account.id), header: account.header };
 }
 
@@ -143,7 +151,7 @@ export async function login(repo: Repo, body: unknown): Promise<{ token: string;
  * the header (so the browser can unwrap the vault key); with `header` + `authKey` it stores the new
  * password and logs in. Only the password slot may change.
  */
-export async function recover(repo: Repo, body: unknown): Promise<{ header: VaultHeader; token?: string }> {
+export async function recover(repo: Repo, body: unknown, client?: ClientInfo): Promise<{ header: VaultHeader; token?: string }> {
   const b = obj(body);
   const username = normalizeUsername(b.username);
   const key = authKey(b.recoveryAuthKey, 'recoveryAuthKey');
@@ -155,6 +163,7 @@ export async function recover(repo: Repo, body: unknown): Promise<{ header: Vaul
     throw new HttpError(400, 'That header does not belong to this vault.');
   }
   await repo.updateAccount(account.id, { header: next, authHash: sha256(authKey(b.authKey, 'authKey')) });
+  await record(repo, 'recover', client, { id: account.id, username });
   return { header: next, token: await newSession(repo, account.id) };
 }
 
@@ -182,10 +191,11 @@ export async function updateAccount(repo: Repo, accountId: string, body: unknown
  * Push local changes and pull everything changed after `since`. A pushed header is accepted only for
  * profile changes (the password and recovery slots can change only through updateAccount/recover).
  */
-export async function sync(repo: Repo, accountId: string, body: unknown): Promise<{ notes: Envelope[]; rev: number; more: boolean; header: VaultHeader }> {
+export async function sync(repo: Repo, accountId: string, body: unknown, client?: ClientInfo): Promise<{ notes: Envelope[]; rev: number; more: boolean; header: VaultHeader }> {
   const b = obj(body);
   const account = await repo.findAccountById(accountId);
   if (!account) throw new HttpError(401, 'Please log in.');
+  await seen(repo, accountId, client);
   const since = typeof b.since === 'number' && Number.isInteger(b.since) && b.since >= 0 ? b.since : 0;
 
   let current = account.header;
@@ -236,15 +246,82 @@ export function createMemoryRepo(): Repo {
   const notes = new Map<string, Map<string, { env: Envelope; rev: number }>>();
   let rev = 0;
   const byId = (id: string) => [...accounts.values()].find(a => a.id === id) ?? null;
+  // Admin data (history, recovery requests, escrow, reset codes, admin sessions).
+  const created = new Map<string, number>();
+  const lastSeen = new Map<string, { at: number; client: ClientInfo }>();
+  const events: EventRow[] = [];
+  const escrows = new Map<string, Escrow>();
+  const requests: RecoveryRequest[] = [];
+  const resetCodes = new Map<string, { hash: string; expiresAt: number }>();
+  const adminSessions = new Map<string, number>();
+  const settings = new Map<string, string>();
+  let eventId = 0;
+  const workspaceRepo = memoryWorkspaceRepo(() => accounts.values(), () => ++rev);
   return {
-    ...memoryWorkspaceRepo(() => accounts.values(), () => ++rev),
+    ...workspaceRepo,
     persistent: false,
+    async logEvent(e) { events.push({ ...e, id: String(++eventId), at: Date.now() }); },
+    async events({ accountId, since, limit }) {
+      return events.filter(e => e.at >= since && (!accountId || e.accountId === accountId)).reverse().slice(0, limit);
+    },
+    async countEvents({ kinds, ip, since }) {
+      return events.filter(e => e.at >= since && kinds.includes(e.kind) && (!ip || e.ip === ip)).length;
+    },
+    async pruneEvents(before) {
+      const keep = events.filter(e => e.at >= before);
+      events.splice(0, events.length, ...keep);
+    },
+    async touchAccount(accountId, client, at) {
+      const last = lastSeen.get(accountId);
+      if (!last || at - last.at >= SEEN_EVERY_MS || last.client.ip !== client.ip) lastSeen.set(accountId, { at, client });
+    },
+    async users() {
+      const list = await Promise.all([...accounts.values()].map(async a => {
+        const seenAt = lastSeen.get(a.id);
+        return {
+          id: a.id, username: a.username, createdAt: created.get(a.id) ?? 0,
+          notes: [...(notes.get(a.id)?.values() ?? [])].filter(n => !n.env.deleted).length,
+          workspaces: (await workspaceRepo.workspacesOf(a.id)).length,
+          lastSeenAt: seenAt?.at ?? null, lastIp: seenAt?.client.ip ?? null, lastUserAgent: seenAt?.client.userAgent ?? null,
+          lastCountry: seenAt?.client.country ?? null, lastRegion: seenAt?.client.region ?? null, lastCity: seenAt?.client.city ?? null,
+          escrowKey: escrows.get(a.id)?.adminKey ?? null,
+        };
+      }));
+      return list.sort((x, y) => y.createdAt - x.createdAt);
+    },
+    getEscrow: async id => escrows.get(id) ?? null,
+    async setEscrow(id, escrow) { if (escrow) escrows.set(id, escrow); else escrows.delete(id); },
+    async createRequest(r) { requests.push(r); },
+    requests: async limit => [...requests].reverse().slice(0, limit),
+    async setRequestStatus(id, status) { const r = requests.find(x => x.id === id); if (r) r.status = status; },
+    async putResetCode(accountId, hash, expiresAt) { resetCodes.set(accountId, { hash, expiresAt }); },
+    async takeResetCode(accountId, hash, now) {
+      const c = resetCodes.get(accountId);
+      if (!c || c.expiresAt <= now || c.hash !== hash) return false;
+      resetCodes.delete(accountId);
+      return true;
+    },
+    async createAdminSession(hash, expiresAt) { adminSessions.set(hash, expiresAt); },
+    findAdminSession: async (hash, now) => (adminSessions.get(hash) ?? 0) > now,
+    async deleteAdminSession(hash) { adminSessions.delete(hash); },
+    getSetting: async key => settings.get(key) ?? null,
+    async setSetting(key, value) { settings.set(key, value); },
+    async resetAccount(accountId, fields) {
+      const a = byId(accountId);
+      if (!a) return;
+      Object.assign(a, fields, { publicKey: null });
+      notes.delete(accountId);
+      for (const [hash, s] of sessions) if (s.accountId === accountId) sessions.delete(hash);
+      escrows.delete(accountId);
+      resetCodes.delete(accountId);
+    },
     findAccount: async u => accounts.get(u) ?? null,
     findAccountById: async id => byId(id),
     async createAccount(username, h, authHash, recoveryAuthHash) {
       if (accounts.has(username)) return null;
       const account = { id: randomBytes(16).toString('hex'), username, header: h, authHash, recoveryAuthHash };
       accounts.set(username, account);
+      created.set(account.id, Date.now());
       return account;
     },
     async updateAccount(id, fields) {

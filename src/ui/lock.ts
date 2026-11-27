@@ -359,6 +359,18 @@ export function wireLockScreen(): void {
     showPanel('recover');
   };
   $('link-login-from-recover').onclick = () => showPanel('login');
+  // Lost both the password and the recovery key: ask the owner, or use the reset code they sent.
+  $('link-ask-owner').onclick = () => {
+    $input('ask-username').value = $input('recover-username').value || $input('login-username').value;
+    $('ask-done').classList.add('hidden');
+    showPanel('ask');
+  };
+  $('link-reset-code').onclick = () => {
+    $input('reset-username').value = $input('recover-username').value || $input('login-username').value;
+    showPanel('reset');
+  };
+  $('link-login-from-ask').onclick = () => showPanel('login');
+  $('link-login-from-reset').onclick = () => showPanel('login');
   $('signup-source').addEventListener('change', updateSignupSource);
 
   onSubmit('panel-login', form => {
@@ -470,6 +482,53 @@ export function wireLockScreen(): void {
       }
       enterApp();
       toast('Password reset. Your recovery key still works; ⚙ Settings can make a new one.', 'info', 7000);
+    });
+  });
+
+  onSubmit('panel-ask', form => {
+    const account = username(form, 'ask-username');
+    const contact = $input('ask-contact').value.trim();
+    if (!account) return;
+    if (!contact) { setError(form, 'Say how the owner can reach you, e.g. an email address or phone number.'); return; }
+    void busy(form, async () => {
+      await api.support({ action: 'request', username: account, contact, message: ($('ask-message') as HTMLTextAreaElement).value });
+      ($('ask-message') as HTMLTextAreaElement).value = '';
+      const done = $('ask-done');
+      done.textContent = 'Request sent. The owner will contact you to check it is really you. If they send you a new recovery key, use “Forgot your password? Use your recovery key”; for a reset code, use “I have a reset code from the owner”.';
+      done.classList.remove('hidden');
+    });
+  });
+
+  onSubmit('panel-reset', form => {
+    const account = username(form, 'reset-username');
+    const code = $input('reset-code').value.trim();
+    const password = $input('reset-password').value;
+    if (!account) return;
+    if (code.replace(/[^A-Za-z0-9]/g, '').length !== 20) { setError(form, 'Enter the reset code exactly as the owner sent it (20 letters and digits).'); return; }
+    if (!checkNewPassword(form, password, $input('reset-confirm').value)) return;
+    void busy(form, async () => {
+      const ok = await confirmDialog({
+        title: 'Start again with an empty account?',
+        message: `Everything stored in “${account}” is deleted and cannot be restored. You keep the username and get a new, empty vault.`,
+        confirmLabel: 'Delete and start again',
+      });
+      if (!ok) return;
+      const v = createVault(password, DEFAULT_KDF_COST, { userName: account });
+      let session: { token: string; header: VaultHeader };
+      try {
+        session = await api.resetWithCode({ username: account, code, header: v.header, authKey: v.authKey, recoveryAuthKey: v.recoveryAuthKey });
+        keepLogin(account, v.authKey);
+      } finally {
+        wipe(v.authKey); wipe(v.recoveryAuthKey);
+      }
+      settings.userName = account;
+      await startSession(account, session.token, v.header, v.vaultKey, []);
+      welcomeNotes().forEach(n => store.addNote(n));
+      await store.flush();
+      await sync.syncNow();
+      $input('reset-code').value = '';
+      $('recovery-key-text').textContent = v.recoveryKey;
+      showPanel('recovery');
     });
   });
 

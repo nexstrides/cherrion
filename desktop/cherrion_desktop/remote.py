@@ -8,15 +8,19 @@ session token is never sent anywhere but the configured server.
 from __future__ import annotations
 
 import json
+import platform
 import socket
 import ssl
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit
 
-ENDPOINTS = {'prelogin', 'signup', 'login', 'recover', 'account', 'sync', 'logout', 'status', 'workspace', 'wsync'}
+from . import __version__
+
+ENDPOINTS = {'prelogin', 'signup', 'login', 'recover', 'account', 'sync', 'logout', 'status', 'workspace', 'wsync', 'support'}
 LOCAL_HOSTS = {'localhost', '127.0.0.1', '::1'}
-USER_AGENT = 'Cherrion-Desktop'
+# Shown as the device in the owner's connection history.
+USER_AGENT = f'Cherrion-Desktop/{__version__} ({platform.system()} {platform.release()})'
 TIMEOUT = 30
 
 

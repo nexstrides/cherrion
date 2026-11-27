@@ -125,6 +125,14 @@ export const api = {
     const notes = Array.isArray(data.notes) ? data.notes.filter(isEnvelope) : [];
     return { notes, rev: typeof data.rev === 'number' ? data.rev : b.since, more: data.more === true, epoch: typeof data.epoch === 'number' ? data.epoch : 1 };
   },
+  /** Account help (api/_lib/admin.ts): recovery requests, reset codes, owner recovery. */
+  async support(body: Record<string, unknown>, authed = false): Promise<Record<string, unknown>> {
+    return post('support', body, authed);
+  },
+  /** Starts again with a new, empty vault, using a reset code from the owner. */
+  async resetWithCode(b: { username: string; code: string; header: VaultHeader; authKey: Uint8Array; recoveryAuthKey: Uint8Array }) {
+    return session(await post('support', { action: 'reset', ...b, authKey: b64(b.authKey), recoveryAuthKey: b64(b.recoveryAuthKey) }));
+  },
   async logout(): Promise<void> {
     if (!token) return;
     try { await post('logout', {}, true); } catch { /* best effort */ }

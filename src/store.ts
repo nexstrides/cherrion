@@ -3,7 +3,7 @@
 // in an outbox, which sync.ts pushes to the server shortly after. The desktop build also writes every
 // envelope to its vault file through a Journal (see src/desktop/session.ts).
 import { api } from './api';
-import { wipe } from './crypto';
+import { sealTo, wipe } from './crypto';
 import { decryptNote, decryptWorkspaceNote, encryptNote, encryptWorkspaceNote, isEnvelope, type Envelope } from './envelope';
 import { now, uid, type Note } from './model';
 import {
@@ -440,6 +440,11 @@ function replaceHeader(h: VaultHeader): void {
   header = h;
   profile = vaultKey ? readProfile(h, vaultKey) : null;
   journal?.header(h);
+}
+
+/** Owner recovery (opt-in): the vault key sealed to the owner's public key. The key never leaves the store. */
+export function sealVaultKeyTo(publicKey: Uint8Array): string {
+  return sealTo(publicKey, requireKey());
 }
 
 /** The account's workspace identity key pair (null until it has one). */

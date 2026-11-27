@@ -4,6 +4,7 @@ import type { Envelope } from '../../src/envelope.js';
 import type { VaultHeader } from '../../src/vault.js';
 import type { Account, Repo } from './core.js';
 import type { Invite, Member, Role, SealedKeys, Workspace, WorkspaceMeta } from './workspaces.js';
+import { SEEN_EVERY_MS, type EventKind, type EventRow, type RecoveryRequest, type RequestStatus } from './admin.js';
 
 type Row = Record<string, unknown>;
 
@@ -74,6 +75,43 @@ export function createPgRepo(connectionString: string): Repo {
       primary key (workspace_id, id)
     )`,
     sql`create index if not exists cherrion_workspace_notes_rev on cherrion_workspace_notes (workspace_id, rev)`,
+    // Admin dashboard: last seen, connection history (30 days), owner recovery (opt-in escrow),
+    // recovery requests, reset codes, admin sessions and small settings.
+    sql`alter table cherrion_accounts add column if not exists last_seen_at timestamptz`,
+    sql`alter table cherrion_accounts add column if not exists last_ip text`,
+    sql`alter table cherrion_accounts add column if not exists last_user_agent text`,
+    sql`alter table cherrion_accounts add column if not exists last_country text`,
+    sql`alter table cherrion_accounts add column if not exists last_region text`,
+    sql`alter table cherrion_accounts add column if not exists last_city text`,
+    sql`alter table cherrion_accounts add column if not exists escrow jsonb`,
+    sql`create table if not exists cherrion_events (
+      id bigserial primary key,
+      at timestamptz not null default now(),
+      kind text not null,
+      account_id uuid references cherrion_accounts(id) on delete set null,
+      username text,
+      ip text, user_agent text, country text, region text, city text
+    )`,
+    sql`create index if not exists cherrion_events_at on cherrion_events (at)`,
+    sql`create index if not exists cherrion_events_account on cherrion_events (account_id, at)`,
+    sql`create index if not exists cherrion_events_ip on cherrion_events (ip, kind, at)`,
+    sql`create table if not exists cherrion_recovery_requests (
+      id uuid primary key,
+      at timestamptz not null default now(),
+      username text not null,
+      account_id uuid references cherrion_accounts(id) on delete set null,
+      contact text not null,
+      message text not null,
+      status text not null,
+      ip text, user_agent text, country text, region text, city text
+    )`,
+    sql`create table if not exists cherrion_reset_codes (
+      account_id uuid primary key references cherrion_accounts(id) on delete cascade,
+      code_hash text not null,
+      expires_at timestamptz not null
+    )`,
+    sql`create table if not exists cherrion_admin_sessions (token_hash text primary key, expires_at timestamptz not null)`,
+    sql`create table if not exists cherrion_settings (key text primary key, value text not null)`,
   ]);
   const db = async () => { ready ??= migrate().catch(err => { ready = null; throw err; }); await ready; };
 
@@ -95,8 +133,143 @@ export function createPgRepo(connectionString: string): Repo {
     expiresAt: new Date(String(r.expires_at)).getTime(),
   });
 
+  const ms = (v: unknown): number => new Date(String(v)).getTime();
+  const str = (v: unknown): string => (v === null || v === undefined ? '' : String(v));
+  const toEvent = (r: Row): EventRow => ({
+    id: String(r.id), at: ms(r.at), kind: r.kind as EventKind,
+    accountId: r.account_id ? String(r.account_id) : null, username: r.username ? String(r.username) : null,
+    ip: str(r.ip), userAgent: str(r.user_agent), country: str(r.country), region: str(r.region), city: str(r.city),
+  });
+  const toRequest = (r: Row): RecoveryRequest => ({
+    id: String(r.id), at: ms(r.at), username: String(r.username), accountId: r.account_id ? String(r.account_id) : null,
+    contact: String(r.contact), message: String(r.message), status: r.status as RequestStatus,
+    ip: str(r.ip), userAgent: str(r.user_agent), country: str(r.country), region: str(r.region), city: str(r.city),
+  });
+  const nullable = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+
   return {
     persistent: true,
+    // ---- Admin dashboard ----
+    async logEvent(e) {
+      await db();
+      await sql`insert into cherrion_events (kind, account_id, username, ip, user_agent, country, region, city)
+        values (${e.kind}, ${e.accountId}, ${e.username}, ${e.ip}, ${e.userAgent}, ${e.country}, ${e.region}, ${e.city})`;
+    },
+    async events({ accountId, since, limit }) {
+      await db();
+      const from = new Date(since).toISOString();
+      const rows = accountId
+        ? await sql`select * from cherrion_events where account_id = ${accountId} and at >= ${from} order by at desc, id desc limit ${limit}`
+        : await sql`select * from cherrion_events where at >= ${from} order by at desc, id desc limit ${limit}`;
+      return rows.map(toEvent);
+    },
+    async countEvents({ kinds, ip, since }) {
+      await db();
+      const from = new Date(since).toISOString();
+      const rows = ip
+        ? await sql`select count(*)::int as n from cherrion_events where kind = any(${kinds}) and ip = ${ip} and at >= ${from}`
+        : await sql`select count(*)::int as n from cherrion_events where kind = any(${kinds}) and at >= ${from}`;
+      return Number(rows[0]?.n ?? 0);
+    },
+    async pruneEvents(before) {
+      await db();
+      await sql`delete from cherrion_events where at < ${new Date(before).toISOString()}`;
+    },
+    async touchAccount(accountId, c, at) {
+      await db();
+      const now = new Date(at).toISOString();
+      const stale = new Date(at - SEEN_EVERY_MS).toISOString();
+      await sql`update cherrion_accounts set last_seen_at = ${now}, last_ip = ${c.ip}, last_user_agent = ${c.userAgent},
+        last_country = ${c.country}, last_region = ${c.region}, last_city = ${c.city}
+        where id = ${accountId} and (last_seen_at is null or last_seen_at < ${stale} or last_ip is distinct from ${c.ip})`;
+    },
+    async users() {
+      await db();
+      const rows = await sql`select a.id, a.username, a.created_at, a.last_seen_at, a.last_ip, a.last_user_agent,
+          a.last_country, a.last_region, a.last_city, a.escrow->>'adminKey' as escrow_key,
+          (select count(*)::int from cherrion_notes n where n.account_id = a.id and not n.deleted) as notes,
+          (select count(*)::int from cherrion_workspace_members m where m.account_id = a.id) as workspaces
+        from cherrion_accounts a order by a.created_at desc`;
+      return rows.map(r => ({
+        id: String(r.id), username: String(r.username), createdAt: ms(r.created_at),
+        notes: Number(r.notes ?? 0), workspaces: Number(r.workspaces ?? 0),
+        lastSeenAt: r.last_seen_at ? ms(r.last_seen_at) : null, lastIp: nullable(r.last_ip), lastUserAgent: nullable(r.last_user_agent),
+        lastCountry: nullable(r.last_country), lastRegion: nullable(r.last_region), lastCity: nullable(r.last_city),
+        escrowKey: nullable(r.escrow_key),
+      }));
+    },
+    async getEscrow(accountId) {
+      await db();
+      const rows = await sql`select escrow from cherrion_accounts where id = ${accountId}`;
+      const e = rows[0]?.escrow as { adminKey?: unknown; sealed?: unknown; at?: unknown } | null | undefined;
+      return e && typeof e.adminKey === 'string' && typeof e.sealed === 'string' ? { adminKey: e.adminKey, sealed: e.sealed, at: Number(e.at ?? 0) } : null;
+    },
+    async setEscrow(accountId, escrow) {
+      await db();
+      await sql`update cherrion_accounts set escrow = ${escrow ? JSON.stringify(escrow) : null}::jsonb where id = ${accountId}`;
+    },
+    async createRequest(r) {
+      await db();
+      await sql`insert into cherrion_recovery_requests (id, at, username, account_id, contact, message, status, ip, user_agent, country, region, city)
+        values (${r.id}, ${new Date(r.at).toISOString()}, ${r.username}, ${r.accountId}, ${r.contact}, ${r.message}, ${r.status},
+          ${r.ip}, ${r.userAgent}, ${r.country}, ${r.region}, ${r.city})`;
+    },
+    async requests(limit) {
+      await db();
+      const rows = await sql`select * from cherrion_recovery_requests order by at desc limit ${limit}`;
+      return rows.map(toRequest);
+    },
+    async setRequestStatus(id, status) {
+      await db();
+      await sql`update cherrion_recovery_requests set status = ${status} where id = ${id}`;
+    },
+    async putResetCode(accountId, codeHash, expiresAt) {
+      await db();
+      await sql`insert into cherrion_reset_codes (account_id, code_hash, expires_at)
+        values (${accountId}, ${codeHash}, ${new Date(expiresAt).toISOString()})
+        on conflict (account_id) do update set code_hash = excluded.code_hash, expires_at = excluded.expires_at`;
+    },
+    async takeResetCode(accountId, codeHash, now) {
+      await db();
+      const rows = await sql`delete from cherrion_reset_codes
+        where account_id = ${accountId} and code_hash = ${codeHash} and expires_at > ${new Date(now).toISOString()} returning account_id`;
+      return rows.length > 0;
+    },
+    async createAdminSession(tokenHash, expiresAt) {
+      await db();
+      await sql.transaction([
+        sql`delete from cherrion_admin_sessions where expires_at < now()`,
+        sql`insert into cherrion_admin_sessions (token_hash, expires_at) values (${tokenHash}, ${new Date(expiresAt).toISOString()})`,
+      ]);
+    },
+    async findAdminSession(tokenHash, now) {
+      await db();
+      const rows = await sql`select 1 from cherrion_admin_sessions where token_hash = ${tokenHash} and expires_at > ${new Date(now).toISOString()}`;
+      return rows.length > 0;
+    },
+    async deleteAdminSession(tokenHash) {
+      await db();
+      await sql`delete from cherrion_admin_sessions where token_hash = ${tokenHash}`;
+    },
+    async getSetting(key) {
+      await db();
+      const rows = await sql`select value from cherrion_settings where key = ${key}`;
+      return rows[0] ? String(rows[0].value) : null;
+    },
+    async setSetting(key, value) {
+      await db();
+      await sql`insert into cherrion_settings (key, value) values (${key}, ${value}) on conflict (key) do update set value = excluded.value`;
+    },
+    async resetAccount(accountId, f) {
+      await db();
+      await sql.transaction([
+        sql`delete from cherrion_notes where account_id = ${accountId}`,
+        sql`delete from cherrion_sessions where account_id = ${accountId}`,
+        sql`delete from cherrion_reset_codes where account_id = ${accountId}`,
+        sql`update cherrion_accounts set header = ${JSON.stringify(f.header)}::jsonb, auth_hash = ${f.authHash},
+          recovery_auth_hash = ${f.recoveryAuthHash}, public_key = null, escrow = null where id = ${accountId}`,
+      ]);
+    },
     async findAccount(username) {
       await db();
       const rows = await sql`select * from cherrion_accounts where username = ${username}`;

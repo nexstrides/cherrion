@@ -5,6 +5,7 @@ import type { Envelope } from './envelope';
 import * as store from './store';
 import type { VaultHeader } from './vault';
 import * as workspaces from './workspaces';
+import { keepEscrowCurrent } from './escrow';
 
 export type SyncState =
   | { kind: 'idle' }
@@ -54,6 +55,9 @@ export function batchBySize(list: Envelope[], budget: number): Envelope[][] {
   if (current.length) batches.push(current);
   return batches;
 }
+
+/** Owner recovery is checked once per session (see escrow.ts). */
+let escrowChecked = false;
 
 /** A newer local header (e.g. a name changed while offline) is pushed once per version. */
 let headerPushedFor = 0;
@@ -105,6 +109,11 @@ async function syncOnce(): Promise<void> {
     // Shared workspaces (accounts only; an unlinked desktop file never gets here).
     unreadable += (await workspaces.syncAll()).unreadable;
     if (store.isHeaderDirty()) scheduleSync(); // e.g. a new workspace identity to upload
+    if (!escrowChecked) {
+      escrowChecked = true;
+      // Owner recovery follows a changed owner key; never in the way of syncing.
+      void keepEscrowCurrent().catch(() => { escrowChecked = false; });
+    }
     setState(store.unsavedCount() ? { kind: 'idle' } : { kind: 'synced', at: Date.now(), unreadable });
     if (store.unsavedCount() || pushHeader) scheduleSync(); // edited while this round was in flight
   } catch (err) {
@@ -154,6 +163,7 @@ export function stopSync(): void {
   stopTimers();
   since = 0;
   headerPushedFor = 0;
+  escrowChecked = false;
   workspaces.resetSync();
   workspaces.reset();
   setState({ kind: 'idle' });
